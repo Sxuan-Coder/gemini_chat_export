@@ -2,6 +2,9 @@
 node_modules
 dist
 .DS_Store
-.cunzhi-memory
+.*
+# 保留.git相关
+!.git
+# 忽略VSCode
 .vscode
 .idea

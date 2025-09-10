@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini 聊天对话记录一键导出
 // @namespace    http://tampermonkey.net/
-// @version      1.0.4
+// @version      1.0.5
 // @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
@@ -60,11 +60,23 @@
 
 	// --- 全局配置常量 ---
 	// UPDATED: 支持隐藏格式钩子 window.__GEMINI_EXPORT_FORMAT = 'txt'|'json'|'md'
-	const buttonTextStartScroll = "滚动导出TXT";
+	const buttonTextStartScroll = "滚动导出对话";
 	const buttonTextStopScroll = "停止滚动";
 	const buttonTextProcessingScroll = "处理滚动数据...";
-	const successTextScroll = "滚动导出 TXT 成功!";
+	const successTextScroll = "滚动导出对话成功!";
 	const errorTextScroll = "滚动导出失败";
+
+	// Canvas 导出相关常量
+	const buttonTextCanvasExport = "导出Canvas";
+	const buttonTextCanvasProcessing = "处理Canvas数据...";
+	const successTextCanvas = "Canvas 导出成功!";
+	const errorTextCanvas = "Canvas 导出失败";
+
+	// 组合导出相关常量
+	const buttonTextCombinedExport = "一键导出对话+Canvas";
+	const buttonTextCombinedProcessing = "处理组合数据...";
+	const successTextCombined = "组合导出成功!";
+	const errorTextCombined = "组合导出失败";
 
 	const exportTimeout = 3000;
 
@@ -84,9 +96,14 @@
 	// --- UI 界面元素变量 ---
 	let captureButtonScroll = null;
 	let stopButtonScroll = null;
+	let captureButtonCanvas = null;
+	let captureButtonCombined = null;
 	let statusDiv = null;
 	let hideButton = null;
 	let buttonContainer = null;
+	let sidePanel = null;
+	let toggleButton = null;
+	let formatSelector = null;
 
 	// --- 辅助工具函数 ---
 	function delay(ms) {
@@ -167,6 +184,8 @@
 	function extractDataIncremental_Gemini() {
 		let newly = 0, updated = false;
 		const nodes = document.querySelectorAll('#chat-history .conversation-container');
+		const seenUserTexts = new Set(); // 用于去重用户消息
+
 		nodes.forEach((c, idx) => {
 			let info = collectedData.get(c) || { domOrder: idx, type: 'unknown', userText: null, thoughtText: null, responseText: null };
 			let changed = false;
@@ -174,7 +193,16 @@
 			if (!info.userText) {
 				const userTexts = Array.from(c.querySelectorAll('user-query .query-text-line, user-query .query-text p, user-query .query-text'))
 					.map(el => el.innerText.trim()).filter(Boolean);
-				if (userTexts.length) { info.userText = userTexts.join('\n'); changed = true; if (info.type === 'unknown') info.type = 'user'; }
+				if (userTexts.length) {
+					const combinedUserText = userTexts.join('\n');
+					// 检查是否已经存在相同的用户消息
+					if (!seenUserTexts.has(combinedUserText)) {
+						seenUserTexts.add(combinedUserText);
+						info.userText = combinedUserText;
+						changed = true;
+						if (info.type === 'unknown') info.type = 'user';
+					}
+				}
 			}
 			const modelRoot = c.querySelector('.response-container-content, model-response');
 			if (modelRoot) {
@@ -217,22 +245,188 @@
 	function createUI() {
 		console.log("开始创建 UI 元素...");
 
-		buttonContainer = document.createElement('div');
-		buttonContainer.id = 'exporter-button-container';
-		buttonContainer.style.cssText = `position: fixed; bottom: 30%; left: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px;`;
-		document.body.appendChild(buttonContainer);
+		// 创建右侧折叠按钮
+		toggleButton = document.createElement('div');
+		toggleButton.id = 'gemini-export-toggle';
+		toggleButton.innerHTML = '<';
+		toggleButton.style.cssText = `
+			position: fixed;
+			top: 50%;
+			right: 0;
+			width: 40px;
+			height: 60px;
+			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			color: white;
+			border: none;
+			border-radius: 20px 0 0 20px;
+			cursor: pointer;
+			z-index: 10001;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			font-size: 18px;
+			font-weight: bold;
+			box-shadow: -2px 0 10px rgba(0,0,0,0.2);
+			transition: all 0.3s ease;
+			transform: translateY(-50%);
+		`;
+		document.body.appendChild(toggleButton);
 
-		captureButtonScroll = document.createElement('button');
-		captureButtonScroll.textContent = buttonTextStartScroll;
-		captureButtonScroll.id = 'capture-chat-scroll-button';
-		captureButtonScroll.style.cssText = `padding: 10px 15px; background-color: #1a73e8; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2); transition: all 0.3s ease;`;
+		// 创建右侧面板
+		sidePanel = document.createElement('div');
+		sidePanel.id = 'gemini-export-panel';
+		sidePanel.style.cssText = `
+			position: fixed;
+			top: 0;
+			right: -400px;
+			width: 400px;
+			height: 100vh;
+			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			z-index: 10000;
+			transition: right 0.3s ease;
+			box-shadow: -5px 0 20px rgba(0,0,0,0.3);
+			overflow-y: auto;
+		`;
+		document.body.appendChild(sidePanel);
+
+		// 面板内容
+		sidePanel.innerHTML = `
+			<div style="padding: 20px; color: white;">
+				<!-- 标题区域 -->
+				<div style="display: flex; align-items: center; margin-bottom: 20px;">
+					<div style="width: 4px; height: 20px; background: #4CAF50; margin-right: 10px; border-radius: 2px;"></div>
+					<h2 style="margin: 0; font-size: 18px; font-weight: 600;">📄 Gemini导出助手</h2>
+				</div>
+				<p style="margin: 0 0 20px 0; font-size: 13px; opacity: 0.9; line-height: 1.4;">一键导出聊天记录和Canvas内容</p>
+
+				<!-- 公告区域 -->
+				<div style="background: rgba(255,255,255,0.1); border-radius: 12px; padding: 15px; margin-bottom: 25px; backdrop-filter: blur(10px);">
+					<h3 style="margin: 0 0 10px 0; font-size: 14px; color: #FFE082;">📢 插件公告</h3>
+					<div style="font-size: 12px; line-height: 1.5; opacity: 0.9;">
+						<div style="margin-bottom: 8px;">🎉 新增Canvas内容导出功能</div>
+						<div style="margin-bottom: 8px;">⚡ 支持多格式导出选择</div>
+						<div>💡 建议导出前滚动到对话顶部</div>
+					</div>
+				</div>
+
+				<!-- 导出格式选择 -->
+				<div style="margin-bottom: 25px;">
+					<h3 style="margin: 0 0 15px 0; font-size: 14px; color: #E1F5FE;">🎨 导出格式</h3>
+					<div id="format-selector" style="display: flex; gap: 8px; flex-wrap: wrap;">
+						<div class="format-option" data-format="txt" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
+							<div style="font-weight: 600; margin-bottom: 2px;">📄 TXT</div>
+							<div style="opacity: 0.8; font-size: 10px;">纯文本</div>
+						</div>
+						<div class="format-option" data-format="json" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
+							<div style="font-weight: 600; margin-bottom: 2px;">📊 JSON</div>
+							<div style="opacity: 0.8; font-size: 10px;">结构化</div>
+						</div>
+						<div class="format-option" data-format="md" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
+							<div style="font-weight: 600; margin-bottom: 2px;">📝 MD</div>
+							<div style="opacity: 0.8; font-size: 10px;">Markdown</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- 功能按钮区域 -->
+				<div id="button-container" style="display: flex; flex-direction: column; gap: 12px;">
+					<!-- 滚动导出按钮 -->
+					<button id="capture-chat-scroll-button" style="
+						width: 100%;
+						padding: 14px;
+						background: linear-gradient(135deg, #42A5F5 0%, #1E88E5 100%);
+						color: white;
+						border: none;
+						border-radius: 10px;
+						cursor: pointer;
+						font-size: 14px;
+						font-weight: 600;
+						box-shadow: 0 4px 12px rgba(66, 165, 245, 0.3);
+						transition: all 0.3s ease;
+					">${buttonTextStartScroll}</button>
+
+					<!-- Canvas导出按钮 -->
+					<button id="capture-canvas-button" style="
+						width: 100%;
+						padding: 14px;
+						background: linear-gradient(135deg, #66BB6A 0%, #4CAF50 100%);
+						color: white;
+						border: none;
+						border-radius: 10px;
+						cursor: pointer;
+						font-size: 14px;
+						font-weight: 600;
+						box-shadow: 0 4px 12px rgba(102, 187, 106, 0.3);
+						transition: all 0.3s ease;
+					">${buttonTextCanvasExport}</button>
+
+					<!-- 组合导出按钮 -->
+					<button id="capture-combined-button" style="
+						width: 100%;
+						padding: 14px;
+						background: linear-gradient(135deg, #9C27B0 0%, #673AB7 100%);
+						color: white;
+						border: none;
+						border-radius: 10px;
+						cursor: pointer;
+						font-size: 14px;
+						font-weight: 600;
+						box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
+						transition: all 0.3s ease;
+					">${buttonTextCombinedExport}</button>
+
+					<!-- 停止按钮 -->
+					<button id="stop-scrolling-button" style="
+						width: 100%;
+						padding: 14px;
+						background: linear-gradient(135deg, #EF5350 0%, #F44336 100%);
+						color: white;
+						border: none;
+						border-radius: 10px;
+						cursor: pointer;
+						font-size: 14px;
+						font-weight: 600;
+						box-shadow: 0 4px 12px rgba(239, 83, 80, 0.3);
+						transition: all 0.3s ease;
+						display: none;
+					">${buttonTextStopScroll}</button>
+				</div>
+
+				<!-- 状态信息 -->
+				<div id="extract-status-div" style="
+					margin-top: 20px;
+					padding: 12px;
+					background: rgba(255,255,255,0.1);
+					border-radius: 8px;
+					font-size: 12px;
+					line-height: 1.4;
+					display: none;
+					backdrop-filter: blur(10px);
+					border: 1px solid rgba(255,255,255,0.1);
+				"></div>
+
+				<!-- 版权信息 -->
+				<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); text-align: center; font-size: 11px; opacity: 0.6;">
+					v1.0.5 | sxuan © 2025
+				</div>
+			</div>
+		`;
+
+		// 获取元素引用
+		captureButtonScroll = document.getElementById('capture-chat-scroll-button');
+		captureButtonCanvas = document.getElementById('capture-canvas-button');
+		captureButtonCombined = document.getElementById('capture-combined-button');
+		stopButtonScroll = document.getElementById('stop-scrolling-button');
+		statusDiv = document.getElementById('extract-status-div');
+		formatSelector = document.getElementById('format-selector');
+
+		// 初始化格式选择器
+		initFormatSelector();
+
+		// 添加事件监听器
 		captureButtonScroll.addEventListener('click', handleScrollExtraction);
-		buttonContainer.appendChild(captureButtonScroll);
-
-		stopButtonScroll = document.createElement('button');
-		stopButtonScroll.textContent = buttonTextStopScroll;
-		stopButtonScroll.id = 'stop-scrolling-button';
-		stopButtonScroll.style.cssText = `padding: 10px 15px; background-color: #d93025; color: white; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; box-shadow: 2px 2px 5px rgba(0,0,0,0.2); display: none; transition: background-color 0.3s ease;`;
+		captureButtonCanvas.addEventListener('click', handleCanvasExtraction);
+		captureButtonCombined.addEventListener('click', handleCombinedExtraction);
 		stopButtonScroll.addEventListener('click', () => {
 			if (isScrolling) {
 				updateStatus('手动停止滚动信号已发送..');
@@ -241,37 +435,157 @@
 				stopButtonScroll.textContent = '正在停止...';
 			}
 		});
-		buttonContainer.appendChild(stopButtonScroll);
 
-		hideButton = document.createElement('button');
-		hideButton.textContent = '👁️';
-		hideButton.id = 'hide-exporter-buttons';
-		hideButton.style.cssText = `position: fixed; bottom: calc(30% + 85px); left: 20px; z-index: 10000; padding: 5px 8px; background-color: rgba(0, 0, 0, 0.3); color: white; border: none; border-radius: 50%; cursor: pointer; font-size: 12px;`;
-		hideButton.addEventListener('click', () => {
-			const isHidden = buttonContainer.style.display === 'none';
-			if (!isHidden) {
-				// 隐藏按钮时显示提示
-				alert('💡 提示：为了确保导出完整的对话记录，建议在开始滚动导出前，手动拉到对话的顶部，这样可以防止对话内容被漏读。');
-			}
-			buttonContainer.style.display = isHidden ? 'flex' : 'none';
-			hideButton.textContent = isHidden ? '👁️' : '🙈';
-		});
-		document.body.appendChild(hideButton);
+		// 折叠按钮点击事件
+		toggleButton.addEventListener('click', togglePanel);
 
-
-		statusDiv = document.createElement('div');
-		statusDiv.id = 'extract-status-div';
-		statusDiv.style.cssText = `position: fixed; bottom: 30%; left: 200px; z-index: 9998; padding: 5px 10px; background-color: rgba(0,0,0,0.7); color: white; font-size: 12px; border-radius: 3px; display: none;`;
-		document.body.appendChild(statusDiv);
-
+		// 添加样式
 		GM_addStyle(`
-                  #capture-chat-scroll-button:disabled, #stop-scrolling-button:disabled {
-                      opacity: 0.6; cursor: not-allowed; background-color: #aaa !important;
-                  }
-                   #capture-chat-scroll-button.success { background-color: #1e8e3e !important; }
-                   #capture-chat-scroll-button.error { background-color: #d93025 !important; }
-        `);
+			/* 按钮悬停和动画效果 */
+			#capture-chat-scroll-button:hover,
+			#capture-canvas-button:hover,
+			#capture-combined-button:hover,
+			#stop-scrolling-button:hover {
+				transform: translateY(-3px) scale(1.02);
+				box-shadow: 0 8px 25px rgba(0,0,0,0.15) !important;
+			}
+			
+			#capture-chat-scroll-button:active,
+			#capture-canvas-button:active,
+			#capture-combined-button:active,
+			#stop-scrolling-button:active {
+				transform: translateY(-1px) scale(0.98);
+			}
+			
+			/* 按钮禁用状态 */
+			#capture-chat-scroll-button:disabled,
+			#capture-canvas-button:disabled,
+			#capture-combined-button:disabled,
+			#stop-scrolling-button:disabled {
+				opacity: 0.5;
+				cursor: not-allowed;
+				transform: none !important;
+				background: linear-gradient(135deg, #999, #666) !important;
+				box-shadow: none !important;
+			}
+			
+			/* 成功/错误状态 */
+			.success {
+				background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%) !important;
+				box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4) !important;
+			}
+			.error {
+				background: linear-gradient(135deg, #F44336 0%, #C62828 100%) !important;
+				box-shadow: 0 6px 20px rgba(244, 67, 54, 0.4) !important;
+			}
+			
+			/* 格式选择器动效 */
+			.format-option {
+				transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
+			}
+			.format-option:hover {
+				background: rgba(255,255,255,0.25) !important;
+				transform: translateY(-2px) scale(1.05);
+				box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+			}
+			.format-option.selected {
+				background: rgba(255,255,255,0.25) !important;
+				border-color: #4CAF50 !important;
+				box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), inset 0 1px 3px rgba(255,255,255,0.2);
+				transform: scale(1.02);
+			}
+			.format-option.selected::before {
+				content: '✓';
+				position: absolute;
+				top: 6px;
+				right: 8px;
+				color: #4CAF50;
+				font-weight: bold;
+				font-size: 14px;
+				background: rgba(255,255,255,0.9);
+				border-radius: 50%;
+				width: 18px;
+				height: 18px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				box-shadow: 0 2px 6px rgba(0,0,0,0.15);
+			}
+			
+			/* 折叠按钮动效 */
+			#gemini-export-toggle {
+				transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
+			}
+			#gemini-export-toggle:hover {
+				right: 8px;
+				box-shadow: -6px 0 20px rgba(0,0,0,0.35);
+				transform: translateY(-50%) scale(1.1);
+				background: linear-gradient(135deg, #7986cb 0%, #8e24aa 100%);
+			}
+			
+			/* 面板滚动条美化 */
+			#gemini-export-panel::-webkit-scrollbar {
+				width: 6px;
+			}
+			#gemini-export-panel::-webkit-scrollbar-track {
+				background: rgba(255,255,255,0.1);
+				border-radius: 3px;
+			}
+			#gemini-export-panel::-webkit-scrollbar-thumb {
+				background: rgba(255,255,255,0.3);
+				border-radius: 3px;
+			}
+			#gemini-export-panel::-webkit-scrollbar-thumb:hover {
+				background: rgba(255,255,255,0.5);
+			}
+		`);
+
 		console.log("UI 元素创建完成");
+	}
+
+	// 格式选择器初始化
+	function initFormatSelector() {
+		const options = formatSelector.querySelectorAll('.format-option');
+		const currentFormat = window.__GEMINI_EXPORT_FORMAT || 'txt';
+
+		// 设置初始选中状态
+		options.forEach(option => {
+			if (option.dataset.format === currentFormat) {
+				option.classList.add('selected');
+			}
+
+			// 添加点击事件
+			option.addEventListener('click', () => {
+				options.forEach(opt => opt.classList.remove('selected'));
+				option.classList.add('selected');
+				window.__GEMINI_EXPORT_FORMAT = option.dataset.format;
+				updateStatus(`导出格式已切换为: ${option.dataset.format.toUpperCase()}`);
+
+				// 2秒后清除状态信息
+				setTimeout(() => {
+					if (statusDiv.textContent.includes('导出格式已切换')) {
+						updateStatus('');
+					}
+				}, 2000);
+			});
+		});
+	}
+
+	// 折叠面板切换
+	function togglePanel() {
+		const isOpen = sidePanel.style.right === '0px';
+
+		if (isOpen) {
+			// 关闭面板
+			sidePanel.style.right = '-420px';
+			toggleButton.innerHTML = '<';
+			toggleButton.style.right = '0';
+		} else {
+			// 打开面板
+			sidePanel.style.right = '0px';
+			toggleButton.innerHTML = '>';
+			toggleButton.style.right = '420px';
+		}
 	}
 
 	function updateStatus(message) {
@@ -284,10 +598,461 @@
 
 
 	// --- 核心业务逻辑 (滚动导出) ---
+
+	// Canvas 内容提取和导出逻辑
+	function extractCanvasContent() {
+		console.log("开始提取 Canvas 内容...");
+		const canvasData = [];
+		const seenContents = new Set(); // 用于去重
+
+		// 提取当前页面显示的代码块
+		const codeBlocks = document.querySelectorAll('code-block, pre code, .code-block');
+		codeBlocks.forEach((block, index) => {
+			const codeContent = block.textContent || block.innerText;
+			if (codeContent && codeContent.trim()) {
+				const trimmedContent = codeContent.trim();
+				// 使用内容的前100个字符作为唯一性检查
+				const contentKey = trimmedContent.substring(0, 100);
+				if (!seenContents.has(contentKey)) {
+					seenContents.add(contentKey);
+					canvasData.push({
+						type: 'code',
+						index: canvasData.length + 1,
+						content: trimmedContent,
+						language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown'
+					});
+				}
+			}
+		});
+
+		// 提取响应内容中的文本
+		const responseElements = document.querySelectorAll('response-element, .model-response-text, .markdown');
+		responseElements.forEach((element, index) => {
+			// 跳过代码块，避免重复
+			if (!element.closest('code-block') && !element.querySelector('code-block')) {
+				const textContent = element.textContent || element.innerText;
+				if (textContent && textContent.trim()) {
+					const trimmedContent = textContent.trim();
+					// 使用内容的前100个字符作为唯一性检查
+					const contentKey = trimmedContent.substring(0, 100);
+					if (!seenContents.has(contentKey)) {
+						seenContents.add(contentKey);
+						canvasData.push({
+							type: 'text',
+							index: canvasData.length + 1,
+							content: trimmedContent
+						});
+					}
+				}
+			}
+		});
+
+		// 如果没有找到特定元素，尝试从整个聊天容器提取
+		if (canvasData.length === 0) {
+			const chatContainer = document.querySelector('chat-window-content, .conversation-container, model-response');
+			if (chatContainer) {
+				const allText = chatContainer.textContent || chatContainer.innerText;
+				if (allText && allText.trim()) {
+					const trimmedContent = allText.trim();
+					const contentKey = trimmedContent.substring(0, 100);
+					if (!seenContents.has(contentKey)) {
+						canvasData.push({
+							type: 'full_content',
+							index: 1,
+							content: trimmedContent
+						});
+					}
+				}
+			}
+		}
+
+		console.log(`Canvas 内容提取完成，共找到 ${canvasData.length} 个内容块（已去重）`);
+		return canvasData;
+	}
+
+	function formatCanvasDataForExport(canvasData, context) {
+		const mode = (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase();
+		const projectName = getProjectName();
+		const ts = getCurrentTimestamp();
+		const base = `${projectName}_Canvas_${context}_${ts}`;
+
+		function escapeMd(s) {
+			return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
+		}
+
+		if (mode === 'txt') {
+			let body = `Gemini Canvas 内容导出\n=========================================\n\n`;
+			canvasData.forEach(item => {
+				if (item.type === 'code') {
+					body += `--- 代码块 ${item.index} (${item.language}) ---\n${item.content}\n\n`;
+				} else if (item.type === 'text') {
+					body += `--- 文本内容 ${item.index} ---\n${item.content}\n\n`;
+				} else {
+					body += `--- 完整内容 ---\n${item.content}\n\n`;
+				}
+				body += "------------------------------\n\n";
+			});
+			body = body.replace(/\n\n------------------------------\n\n$/, '\n').trim();
+			return { blob: new Blob([body], { type: 'text/plain;charset=utf-8' }), filename: `${base}.txt` };
+		}
+
+		if (mode === 'json') {
+			const jsonData = {
+				exportType: 'canvas',
+				timestamp: ts,
+				projectName: projectName,
+				content: canvasData
+			};
+			return { blob: new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
+		}
+
+		if (mode === 'md') {
+			let md = `# ${projectName} Canvas 内容导出\n\n`;
+			md += `导出时间：${ts}\n\n`;
+			canvasData.forEach((item, idx) => {
+				md += `## 内容块 ${idx + 1}\n\n`;
+				if (item.type === 'code') {
+					md += `**代码块** (语言: ${item.language}):\n\n\`\`\`${item.language}\n${item.content}\n\`\`\`\n\n`;
+				} else if (item.type === 'text') {
+					md += `**文本内容**:\n\n${escapeMd(item.content)}\n\n`;
+				} else {
+					md += `**完整内容**:\n\n${escapeMd(item.content)}\n\n`;
+				}
+				md += `---\n\n`;
+			});
+			return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
+		}
+	}
+
+	async function handleCanvasExtraction() {
+		console.log("开始 Canvas 导出流程...");
+		captureButtonCanvas.disabled = true;
+		captureButtonCanvas.textContent = buttonTextCanvasProcessing;
+
+		try {
+			updateStatus('正在提取 Canvas 内容...');
+			const canvasData = extractCanvasContent();
+
+			if (canvasData.length === 0) {
+				alert('未能找到任何 Canvas 内容，请确保页面上有代码块或文档内容。');
+				captureButtonCanvas.textContent = `${errorTextCanvas}: 无内容`;
+				captureButtonCanvas.classList.add('error');
+			} else {
+				updateStatus(`正在格式化 ${canvasData.length} 个内容块...`);
+				const exportData = formatCanvasDataForExport(canvasData, 'export');
+
+				// 创建下载
+				const a = document.createElement('a');
+				const url = URL.createObjectURL(exportData.blob);
+				a.href = url;
+				a.download = exportData.filename;
+				document.body.appendChild(a);
+				a.click();
+				document.body.removeChild(a);
+				URL.revokeObjectURL(url);
+
+				captureButtonCanvas.textContent = successTextCanvas;
+				captureButtonCanvas.classList.add('success');
+				updateStatus(`Canvas 导出成功: ${exportData.filename}`);
+			}
+		} catch (error) {
+			console.error('Canvas 导出过程中发生错误:', error);
+			updateStatus(`错误 (Canvas 导出): ${error.message}`);
+			alert(`Canvas 导出过程中发生错误: ${error.message}`);
+			captureButtonCanvas.textContent = `${errorTextCanvas}: 处理出错`;
+			captureButtonCanvas.classList.add('error');
+		} finally {
+			// 3秒后重置按钮状态
+			setTimeout(() => {
+				captureButtonCanvas.textContent = buttonTextCanvasExport;
+				captureButtonCanvas.disabled = false;
+				captureButtonCanvas.classList.remove('success', 'error');
+				updateStatus('');
+			}, exportTimeout);
+		}
+	}
+
+	// 组合导出功能：同时导出对话和Canvas内容
+	async function handleCombinedExtraction() {
+		console.log("开始组合导出流程...");
+		captureButtonCombined.disabled = true;
+		captureButtonCombined.textContent = buttonTextCombinedProcessing;
+
+		try {
+			// 第一步：提取Canvas内容
+			updateStatus('步骤 1/3: 提取 Canvas 内容...');
+			const canvasData = extractCanvasContent();
+
+			// 第二步：滚动获取对话内容
+			updateStatus('步骤 2/3: 开始滚动获取对话内容...');
+
+			// 清空之前的数据
+			collectedData.clear();
+			isScrolling = true;
+			scrollCount = 0;
+			noChangeCounter = 0;
+
+			// 显示停止按钮
+			stopButtonScroll.style.display = 'block';
+			stopButtonScroll.disabled = false;
+			stopButtonScroll.textContent = buttonTextStopScroll;
+
+			// 先滚动到顶部
+			const scroller = getMainScrollerElement_AiStudio();
+			if (scroller) {
+				updateStatus('步骤 2/3: 滚动到顶部...');
+				const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
+				if (isWindowScroller) {
+					window.scrollTo({ top: 0, behavior: 'smooth' });
+				} else {
+					scroller.scrollTo({ top: 0, behavior: 'smooth' });
+				}
+				await delay(1500);
+			}
+
+			// 执行滚动导出
+			const scrollSuccess = await autoScrollDown_AiStudio();
+			if (scrollSuccess !== false) {
+				updateStatus('步骤 2/3: 处理滚动数据...');
+				await delay(500);
+				extractDataIncremental_AiStudio();
+				await delay(200);
+			} else {
+				throw new Error('滚动获取对话内容失败');
+			}
+
+			// 第三步：合并数据并导出
+			updateStatus('步骤 3/3: 合并数据并生成文件...');
+
+			// 获取滚动数据
+			let scrollData = [];
+			if (document.querySelector('#chat-history .conversation-container')) {
+				const cs = document.querySelectorAll('#chat-history .conversation-container');
+				cs.forEach(c => { if (collectedData.has(c)) scrollData.push(collectedData.get(c)); });
+			} else {
+				const turns = document.querySelectorAll('ms-chat-turn');
+				turns.forEach(t => { if (collectedData.has(t)) scrollData.push(collectedData.get(t)); });
+			}
+
+			// 组合数据并导出
+			const combinedData = formatCombinedDataForExport(scrollData, canvasData);
+
+			// 创建下载
+			const a = document.createElement('a');
+			const url = URL.createObjectURL(combinedData.blob);
+			a.href = url;
+			a.download = combinedData.filename;
+			document.body.appendChild(a);
+			a.click();
+			document.body.removeChild(a);
+			URL.revokeObjectURL(url);
+
+			captureButtonCombined.textContent = successTextCombined;
+			captureButtonCombined.classList.add('success');
+			updateStatus(`组合导出成功: ${combinedData.filename}`);
+
+		} catch (error) {
+			console.error('组合导出过程中发生错误:', error);
+			updateStatus(`错误 (组合导出): ${error.message}`);
+			alert(`组合导出过程中发生错误: ${error.message}`);
+			captureButtonCombined.textContent = `${errorTextCombined}: 处理出错`;
+			captureButtonCombined.classList.add('error');
+		} finally {
+			// 隐藏停止按钮
+			stopButtonScroll.style.display = 'none';
+			isScrolling = false;
+
+			// 3秒后重置按钮状态
+			setTimeout(() => {
+				captureButtonCombined.textContent = buttonTextCombinedExport;
+				captureButtonCombined.disabled = false;
+				captureButtonCombined.classList.remove('success', 'error');
+				updateStatus('');
+			}, exportTimeout);
+		}
+	}
+
+	// 组合数据格式化和导出函数
+	function formatCombinedDataForExport(scrollData, canvasData) {
+		const mode = (window.__GEMINI_EXPORT_FORMAT || 'txt').toLowerCase();
+		const projectName = getProjectName();
+		const ts = getCurrentTimestamp();
+		const base = `${projectName}_Combined_${ts}`;
+
+		function escapeMd(s) {
+			return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
+		}
+
+		// 对对话数据进行去重处理
+		function deduplicateScrollData(data) {
+			if (!data || !Array.isArray(data)) return [];
+
+			const seen = new Set();
+			const deduplicated = [];
+
+			data.forEach(item => {
+				// 创建内容的唯一标识符
+				const contentKey = [
+					item.userText || '',
+					item.thoughtText || '',
+					item.responseText || ''
+				].join('|||').substring(0, 200); // 使用前200个字符作为唯一性标识
+
+				if (!seen.has(contentKey)) {
+					seen.add(contentKey);
+					deduplicated.push(item);
+				}
+			});
+
+			return deduplicated;
+		}
+
+		// 去重处理
+		const deduplicatedScrollData = deduplicateScrollData(scrollData);
+
+		if (mode === 'txt') {
+			let body = `Gemini 组合导出 (对话 + Canvas)
+=========================================
+
+`;
+
+			// 添加对话内容
+			if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
+				body += `=== 对话内容 ===
+
+`;
+				deduplicatedScrollData.forEach(item => {
+					let block = '';
+					if (item.userText) block += `--- 用户 ---\n${item.userText}\n\n`;
+					if (item.thoughtText) block += `--- AI 思维链 ---\n${item.thoughtText}\n\n`;
+					if (item.responseText) block += `--- AI 回答 ---\n${item.responseText}\n\n`;
+					body += block.trim() + "\n\n------------------------------\n\n";
+				});
+			}
+
+			// 添加Canvas内容
+			if (canvasData && canvasData.length > 0) {
+				body += `\n\n=== Canvas 内容 ===\n\n`;
+				canvasData.forEach(item => {
+					if (item.type === 'code') {
+						body += `--- 代码块 ${item.index} (${item.language}) ---\n${item.content}\n\n`;
+					} else if (item.type === 'text') {
+						body += `--- 文本内容 ${item.index} ---\n${item.content}\n\n`;
+					} else {
+						body += `--- 完整内容 ---\n${item.content}\n\n`;
+					}
+					body += "------------------------------\n\n";
+				});
+			}
+
+			body = body.replace(/\n\n------------------------------\n\n$/, '\n').trim();
+			return { blob: new Blob([body], { type: 'text/plain;charset=utf-8' }), filename: `${base}.txt` };
+		}
+
+		if (mode === 'json') {
+			const jsonData = {
+				exportType: 'combined',
+				timestamp: ts,
+				projectName: projectName,
+				dialogue: [],
+				canvas: canvasData || []
+			};
+
+			// 添加对话数据
+			if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
+				deduplicatedScrollData.forEach(item => {
+					if (item.userText) jsonData.dialogue.push({ role: 'user', content: item.userText, id: `${item.domOrder}-user` });
+					if (item.thoughtText) jsonData.dialogue.push({ role: 'thought', content: item.thoughtText, id: `${item.domOrder}-thought` });
+					if (item.responseText) jsonData.dialogue.push({ role: 'assistant', content: item.responseText, id: `${item.domOrder}-assistant` });
+				});
+			}
+
+			return { blob: new Blob([JSON.stringify(jsonData, null, 2)], { type: 'application/json;charset=utf-8' }), filename: `${base}.json` };
+		}
+
+		if (mode === 'md') {
+			let md = `# ${projectName} 组合导出
+
+导出时间：${ts}
+
+`;
+
+			// 添加对话内容
+			if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
+				md += `## 💬 对话内容
+
+`;
+				deduplicatedScrollData.forEach((item, idx) => {
+					md += `### 回合 ${idx + 1}
+
+`;
+					if (item.userText) md += `**用户**:
+
+${escapeMd(item.userText)}
+
+`;
+					if (item.thoughtText) md += `<details><summary>AI 思维链</summary>
+
+${escapeMd(item.thoughtText)}
+
+</details>
+
+`;
+					if (item.responseText) md += `**AI 回答**:
+
+${escapeMd(item.responseText)}
+
+`;
+					md += `---
+
+`;
+				});
+			}
+
+			// 添加Canvas内容
+			if (canvasData && canvasData.length > 0) {
+				md += `## 🎨 Canvas 内容
+
+`;
+				canvasData.forEach((item, idx) => {
+					md += `### 内容块 ${idx + 1}
+
+`;
+					if (item.type === 'code') {
+						md += `**代码块** (语言: ${item.language}):
+
+\`\`\`${item.language}
+${item.content}
+\`\`\`
+
+`;
+					} else if (item.type === 'text') {
+						md += `**文本内容**:
+
+${escapeMd(item.content)}
+
+`;
+					} else {
+						md += `**完整内容**:
+
+${escapeMd(item.content)}
+
+`;
+					}
+					md += `---
+
+`;
+				});
+			}
+
+			return { blob: new Blob([md], { type: 'text/markdown;charset=utf-8' }), filename: `${base}.md` };
+		}
+	}
 	function extractDataIncremental_AiStudio() {
 		let newlyFoundCount = 0;
 		let dataUpdatedInExistingTurn = false;
 		const currentTurns = document.querySelectorAll('ms-chat-turn');
+		const seenUserTexts = new Set(); // 用于去重用户消息
 
 		currentTurns.forEach((turn, index) => {
 			const turnKey = turn;
@@ -313,8 +1078,12 @@
 					let userNode = turn.querySelector('.turn-content ms-cmark-node');
 					let userText = userNode ? userNode.innerText.trim() : null;
 					if (userText) {
-						extractedInfo.userText = userText;
-						dataWasUpdatedThisTime = true;
+						// 检查是否已经存在相同的用户消息
+						if (!seenUserTexts.has(userText)) {
+							seenUserTexts.add(userText);
+							extractedInfo.userText = userText;
+							dataWasUpdatedThisTime = true;
+						}
 					}
 				}
 			} else if (turnContainer.classList.contains('model')) {
@@ -433,13 +1202,41 @@
 		const projectName = getProjectName();
 		const ts = getCurrentTimestamp();
 		const base = `${projectName}_${context}_${ts}`;
+
+		// 对数据进行去重处理
+		function deduplicateData(data) {
+			if (!data || !Array.isArray(data)) return [];
+
+			const seen = new Set();
+			const deduplicated = [];
+
+			data.forEach(item => {
+				// 创建内容的唯一标识符
+				const contentKey = [
+					item.userText || '',
+					item.thoughtText || '',
+					item.responseText || ''
+				].join('|||').substring(0, 200); // 使用前200个字符作为唯一性标识
+
+				if (!seen.has(contentKey)) {
+					seen.add(contentKey);
+					deduplicated.push(item);
+				}
+			});
+
+			return deduplicated;
+		}
+
+		// 去重处理
+		const deduplicatedData = deduplicateData(sortedData);
+
 		function escapeMd(s) {
 			return s.replace(/`/g, '\u0060').replace(/</g, '&lt;'); // 简单避免破坏结构；代码块原样保存
 		}
 		if (mode === 'txt') {
 			let header = context === 'scroll' ? 'Gemini 聊天记录 (滚动采集)' : 'Gemini 对话记录 (SDK 代码)';
 			let body = `${header}\n=========================================\n\n`;
-			sortedData.forEach(item => {
+			deduplicatedData.forEach(item => {
 				let block = '';
 				if (item.userText) block += `--- 用户 ---\n${item.userText}\n\n`;
 				if (item.thoughtText) block += `--- AI 思维链 ---\n${item.thoughtText}\n\n`;
@@ -457,7 +1254,7 @@
 		}
 		if (mode === 'json') {
 			let arr = [];
-			sortedData.forEach(item => {
+			deduplicatedData.forEach(item => {
 				if (item.userText) arr.push({ role: 'user', content: item.userText, id: `${item.domOrder}-user` });
 				if (item.thoughtText) arr.push({ role: 'thought', content: item.thoughtText, id: `${item.domOrder}-thought` });
 				if (item.responseText) arr.push({ role: 'assistant', content: item.responseText, id: `${item.domOrder}-assistant` });
@@ -467,7 +1264,7 @@
 		if (mode === 'md') { // 正式 Markdown 格式
 			let md = `# ${projectName} 对话导出 (${context})\n\n`;
 			md += `导出时间：${ts}\n\n`;
-			sortedData.forEach((item, idx) => {
+			deduplicatedData.forEach((item, idx) => {
 				md += `## 回合 ${idx + 1}\n\n`;
 				if (item.userText) md += `**用户**:\n\n${escapeMd(item.userText)}\n\n`;
 				if (item.thoughtText) md += `<details><summary>AI 思维链</summary>\n\n${escapeMd(item.thoughtText)}\n\n</details>\n\n`;
@@ -571,7 +1368,7 @@
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.0.4): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.0.5): 等待页面加载 (2.5秒)...");
 	setTimeout(createUI, 2500);
 
 })();
