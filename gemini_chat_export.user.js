@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Gemini 聊天对话记录一键导出
+// @name         Gemini 聊天对话增强脚本
 // @namespace    http://tampermonkey.net/
-// @version      1.0.6
-// @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件。
+// @version      1.0.7
+// @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
 // @grant        GM_addStyle
@@ -16,8 +16,6 @@
 (function () {
 	'use strict';
 
-	// --- 兼容性修复：TrustedHTML 策略 ---
-	// 修复现代浏览器 Trusted Types 安全策略错误 + 强化版本
 	if (window.trustedTypes && window.trustedTypes.createPolicy) {
 		try {
 			// 尝试创建默认策略
@@ -106,10 +104,154 @@
 	let sidePanel = null;
 	let toggleButton = null;
 	let formatSelector = null;
+	// 对话目录面板：独立于折叠侧栏，避免随侧栏一起隐藏
+	let conversationDirectoryPanel = null;
+	let conversationDirectoryContainer = null;
+	let conversationDirectoryObserver = null;
+	let conversationDirectoryUpdateTimer = null;
+	let conversationDirectoryAnchorSeq = 0;
+	let conversationDirectoryLastSignature = '';
+	// 主题同步：跟随 Gemini 页面深浅色主题
+	let themeObserver = null;
+	let themeUpdateTimer = null;
+	let currentThemeMode = null;
 
 	// --- 辅助工具函数 ---
 	function delay(ms) {
 		return new Promise(resolve => setTimeout(resolve, ms));
+	}
+
+	function parseRgbColor(colorString) {
+		if (!colorString) return null;
+		const m = colorString.match(/rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)/i);
+		if (!m) return null;
+		return { r: Number(m[1]), g: Number(m[2]), b: Number(m[3]) };
+	}
+
+	function getPageBackgroundColor() {
+		try {
+			const bodyBg = window.getComputedStyle(document.body).backgroundColor;
+			if (bodyBg && bodyBg !== 'rgba(0, 0, 0, 0)' && bodyBg !== 'transparent') return bodyBg;
+		} catch (_) { }
+		try {
+			return window.getComputedStyle(document.documentElement).backgroundColor;
+		} catch (_) { }
+		return '';
+	}
+
+	function detectPageThemeMode() {
+		try {
+			const scheme = window.getComputedStyle(document.documentElement).colorScheme;
+			if (scheme && scheme.includes('dark')) return 'dark';
+			if (scheme && scheme.includes('light')) return 'light';
+		} catch (_) { }
+
+		const rgb = parseRgbColor(getPageBackgroundColor());
+		if (rgb) {
+			const luminance = (0.2126 * rgb.r) + (0.7152 * rgb.g) + (0.0722 * rgb.b);
+			return luminance < 128 ? 'dark' : 'light';
+		}
+
+		try {
+			return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+		} catch (_) { }
+		return 'dark';
+	}
+
+	function applyThemeVariables(mode) {
+		const darkVars = {
+			'--ge-panel-bg': '#111827',
+			'--ge-panel-text': '#F9FAFB',
+			'--ge-text-muted': '#D1D5DB',
+			'--ge-text-muted-2': '#9CA3AF',
+			'--ge-border': '#374151',
+			'--ge-border-hover': '#6B7280',
+			'--ge-surface': '#1F2937',
+			'--ge-surface-2': '#111827',
+			'--ge-surface-hover': '#1F2937',
+			'--ge-divider': '#1F2937',
+			'--ge-primary': '#1E40AF',
+			'--ge-primary-hover': '#1D4ED8',
+			'--ge-primary-border': '#1D4ED8',
+			'--ge-on-primary': '#F9FAFB',
+			'--ge-success': '#059669',
+			'--ge-success-border': '#047857',
+			'--ge-danger': '#DC2626',
+			'--ge-danger-border': '#B91C1C',
+			'--ge-neutral': '#374151',
+			'--ge-neutral-border': '#4B5563',
+			'--ge-scroll-thumb': '#374151',
+			'--ge-scroll-thumb-hover': '#4B5563'
+		};
+		const lightVars = {
+			'--ge-panel-bg': '#F9FAFB',
+			'--ge-panel-text': '#111827',
+			'--ge-text-muted': '#374151',
+			'--ge-text-muted-2': '#6B7280',
+			'--ge-border': '#E5E7EB',
+			'--ge-border-hover': '#9CA3AF',
+			'--ge-surface': '#FFFFFF',
+			'--ge-surface-2': '#F3F4F6',
+			'--ge-surface-hover': '#F3F4F6',
+			'--ge-divider': '#E5E7EB',
+			'--ge-primary': '#1E40AF',
+			'--ge-primary-hover': '#1D4ED8',
+			'--ge-primary-border': '#1D4ED8',
+			'--ge-on-primary': '#F9FAFB',
+			'--ge-success': '#059669',
+			'--ge-success-border': '#047857',
+			'--ge-danger': '#DC2626',
+			'--ge-danger-border': '#B91C1C',
+			'--ge-neutral': '#374151',
+			'--ge-neutral-border': '#4B5563',
+			'--ge-scroll-thumb': '#D1D5DB',
+			'--ge-scroll-thumb-hover': '#9CA3AF'
+		};
+
+		const vars = mode === 'light' ? lightVars : darkVars;
+		Object.entries(vars).forEach(([key, value]) => {
+			document.documentElement.style.setProperty(key, value);
+		});
+		currentThemeMode = mode;
+	}
+
+	function refreshThemeIfNeeded() {
+		const nextMode = detectPageThemeMode();
+		if (nextMode === currentThemeMode) return;
+		applyThemeVariables(nextMode);
+	}
+
+	function scheduleThemeRefresh(delayMs = 120) {
+		if (themeUpdateTimer) window.clearTimeout(themeUpdateTimer);
+		themeUpdateTimer = window.setTimeout(() => {
+			themeUpdateTimer = null;
+			refreshThemeIfNeeded();
+		}, delayMs);
+	}
+
+	function startThemeSync() {
+		applyThemeVariables(detectPageThemeMode());
+
+		if (themeObserver) themeObserver.disconnect();
+		themeObserver = new MutationObserver(() => scheduleThemeRefresh(120));
+		try {
+			themeObserver.observe(document.documentElement, {
+				attributes: true,
+				attributeFilter: ['class', 'style', 'data-theme', 'data-color-scheme', 'color-scheme']
+			});
+		} catch (_) { }
+		try {
+			themeObserver.observe(document.body, {
+				attributes: true,
+				attributeFilter: ['class', 'style']
+			});
+		} catch (_) { }
+
+		try {
+			const media = window.matchMedia('(prefers-color-scheme: dark)');
+			if (media && media.addEventListener) media.addEventListener('change', () => scheduleThemeRefresh(120));
+			else if (media && media.addListener) media.addListener(() => scheduleThemeRefresh(120));
+		} catch (_) { }
 	}
 
 	function getCurrentTimestamp() {
@@ -234,12 +376,110 @@
 			}
 		});
 		updateStatus(`滚动 ${scrollCount}/${MAX_SCROLL_ATTEMPTS}... 已收集 ${collectedData.size} 条记录..`);
+		scheduleConversationDirectoryUpdate(0);
 		return newly > 0 || updated;
 	}
 
 	function extractDataIncremental_Dispatch() {
 		if (document.querySelector('#chat-history .conversation-container')) return extractDataIncremental_Gemini();
 		return extractDataIncremental_AiStudio();
+	}
+
+	function scheduleConversationDirectoryUpdate(delayMs = 200) {
+		if (!conversationDirectoryContainer) return;
+		if (conversationDirectoryUpdateTimer) window.clearTimeout(conversationDirectoryUpdateTimer);
+		conversationDirectoryUpdateTimer = window.setTimeout(() => {
+			conversationDirectoryUpdateTimer = null;
+			updateConversationDirectory();
+		}, delayMs);
+	}
+
+	function ensureConversationAnchor(element) {
+		if (!element) return null;
+		const existing = element.dataset.geminiExportAnchorId;
+		if (existing) return existing;
+		if (element.id) {
+			element.dataset.geminiExportAnchorId = element.id;
+			return element.id;
+		}
+		conversationDirectoryAnchorSeq += 1;
+		const id = `gemini-export-anchor-${conversationDirectoryAnchorSeq}`;
+		element.id = id;
+		element.dataset.geminiExportAnchorId = id;
+		return id;
+	}
+
+	function collectUserPromptsForDirectory() {
+		const results = [];
+		const geminiContainers = document.querySelectorAll('#chat-history .conversation-container');
+		if (geminiContainers && geminiContainers.length) {
+			geminiContainers.forEach((c) => {
+				const userTexts = Array.from(c.querySelectorAll('user-query .query-text-line, user-query .query-text p, user-query .query-text'))
+					.map(el => (el.innerText || '').trim())
+					.filter(Boolean);
+				if (!userTexts.length) return;
+				const anchorId = ensureConversationAnchor(c);
+				if (!anchorId) return;
+				results.push({ anchorId, text: userTexts.join(' ') });
+			});
+			return results;
+		}
+
+		const turns = document.querySelectorAll('ms-chat-turn');
+		if (turns && turns.length) {
+			turns.forEach((turn) => {
+				const userContainer = turn.querySelector('.chat-turn-container.user');
+				if (!userContainer) return;
+				const userNode = turn.querySelector('.turn-content ms-cmark-node');
+				const text = (userNode ? userNode.innerText : turn.innerText) || '';
+				const cleaned = text.trim().replace(/\s+/g, ' ');
+				if (!cleaned) return;
+				const anchorId = ensureConversationAnchor(turn);
+				if (!anchorId) return;
+				results.push({ anchorId, text: cleaned });
+			});
+		}
+		return results;
+	}
+
+	function renderConversationDirectoryItems(items) {
+		conversationDirectoryContainer.innerHTML = '';
+		if (!items.length) {
+			const empty = document.createElement('div');
+			empty.textContent = '未检测到用户提问';
+			empty.style.cssText = 'padding: 10px; color: var(--ge-text-muted-2); font-size: 12px;';
+			conversationDirectoryContainer.appendChild(empty);
+			return;
+		}
+
+		items.forEach((item, idx) => {
+			const row = document.createElement('div');
+			row.className = 'gemini-conversation-directory-item';
+			row.dataset.anchorId = item.anchorId;
+			const preview = item.text.replace(/\s+/g, ' ').trim();
+			const shortText = preview.length > 60 ? `${preview.slice(0, 60)}...` : preview;
+			row.textContent = `${idx + 1}. ${shortText}`;
+			conversationDirectoryContainer.appendChild(row);
+		});
+	}
+
+	function updateConversationDirectory() {
+		if (!conversationDirectoryContainer) return;
+		const items = collectUserPromptsForDirectory();
+		// 目录签名：包含文本片段，确保同一锚点内容补全时也能刷新
+		const signature = items.map(i => `${i.anchorId}:${i.text.slice(0, 80)}`).join('|');
+		if (signature === conversationDirectoryLastSignature) return;
+		conversationDirectoryLastSignature = signature;
+		renderConversationDirectoryItems(items);
+	}
+
+	function startConversationDirectoryObserver() {
+		if (conversationDirectoryObserver) conversationDirectoryObserver.disconnect();
+		const root = document.querySelector('#chat-history') || document.body;
+		conversationDirectoryObserver = new MutationObserver(() => {
+			scheduleConversationDirectoryUpdate(150);
+		});
+		conversationDirectoryObserver.observe(root, { childList: true, subtree: true });
 	}
 
 
@@ -257,8 +497,8 @@
 			right: 0;
 			width: 40px;
 			height: 60px;
-			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-			color: white;
+			background: var(--ge-primary);
+			color: var(--ge-on-primary);
 			border: none;
 			border-radius: 20px 0 0 20px;
 			cursor: pointer;
@@ -268,7 +508,7 @@
 			justify-content: center;
 			font-size: 18px;
 			font-weight: bold;
-			box-shadow: -2px 0 10px rgba(0,0,0,0.2);
+			box-shadow: none;
 			transition: all 0.3s ease;
 			transform: translateY(-50%);
 		`;
@@ -283,49 +523,67 @@
 			right: -400px;
 			width: 400px;
 			height: 100vh;
-			background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+			background: var(--ge-panel-bg);
 			z-index: 10000;
 			transition: right 0.3s ease;
-			box-shadow: -5px 0 20px rgba(0,0,0,0.3);
+			box-shadow: none;
 			overflow-y: auto;
 		`;
 		document.body.appendChild(sidePanel);
 
+		// 创建对话目录面板（独立于折叠侧栏）
+		conversationDirectoryPanel = document.createElement('div');
+		conversationDirectoryPanel.id = 'gemini-conversation-directory-panel';
+		conversationDirectoryPanel.style.cssText = `
+			position: fixed;
+			top: 90px;
+			right: 44px;
+			width: 280px;
+			max-height: 360px;
+			background: var(--ge-panel-bg);
+			border: 1px solid var(--ge-border);
+			border-radius: 10px;
+			z-index: 9999;
+			overflow: hidden;
+			font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+		`;
+		conversationDirectoryPanel.innerHTML = `
+			<div style="padding: 12px; border-bottom: 1px solid var(--ge-border); color: var(--ge-panel-text); font-size: 13px; font-weight: 600;">对话目录</div>
+			<div id="conversation-directory" style="max-height: 320px; overflow: auto;"></div>
+		`;
+		document.body.appendChild(conversationDirectoryPanel);
+
 		// 面板内容
 		sidePanel.innerHTML = `
-			<div style="padding: 20px; color: white;">
-				<!-- 标题区域 -->
-				<div style="display: flex; align-items: center; margin-bottom: 20px;">
-					<div style="width: 4px; height: 20px; background: #4CAF50; margin-right: 10px; border-radius: 2px;"></div>
-					<h2 style="margin: 0; font-size: 18px; font-weight: 600;">📄 Gemini导出助手</h2>
+			<div style="padding: 20px; color: var(--ge-panel-text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;">
+				<div style="display: flex; align-items: center; margin-bottom: 16px;">
+					<div style="width: 4px; height: 18px; background: var(--ge-success); margin-right: 10px; border-radius: 2px;"></div>
+					<h2 style="margin: 0; font-size: 16px; font-weight: 600;">Gemini 导出助手</h2>
 				</div>
-				<p style="margin: 0 0 20px 0; font-size: 13px; opacity: 0.9; line-height: 1.4;">一键导出聊天记录和Canvas内容</p>
+				<p style="margin: 0 0 16px 0; font-size: 12px; color: var(--ge-text-muted); line-height: 1.5;">一键导出聊天记录与 Canvas 内容</p>
 
-				<!-- 公告区域 -->
-				<div style="background: rgba(255,255,255,0.1); border-radius: 12px; padding: 15px; margin-bottom: 25px; backdrop-filter: blur(10px);">
-					<h3 style="margin: 0 0 10px 0; font-size: 14px; color: #FFE082;">📢 插件公告</h3>
-					<div style="font-size: 12px; line-height: 1.5; opacity: 0.9;">
-						<div style="margin-bottom: 8px;">🎉 新增Canvas内容导出功能</div>
-						<div style="margin-bottom: 8px;">⚡ 支持多格式导出选择</div>
-						<div>💡 建议导出前滚动到对话顶部</div>
+				<div style="background: var(--ge-surface); border: 1px solid var(--ge-border); border-radius: 10px; padding: 12px; margin-bottom: 16px;">
+					<h3 style="margin: 0 0 8px 0; font-size: 13px; color: var(--ge-panel-text);">使用提示</h3>
+					<div style="font-size: 12px; color: var(--ge-text-muted); line-height: 1.6;">
+						<div style="margin-bottom: 6px;">导出前建议先滚动到对话顶部，避免缺失</div>
+						<div>如页面结构更新导致无法识别，请更新选择器</div>
 					</div>
 				</div>
 
-				<!-- 导出格式选择 -->
-				<div style="margin-bottom: 25px;">
-					<h3 style="margin: 0 0 15px 0; font-size: 14px; color: #E1F5FE;">🎨 导出格式</h3>
-					<div id="format-selector" style="display: flex; gap: 8px; flex-wrap: wrap;">
-						<div class="format-option" data-format="txt" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
-							<div style="font-weight: 600; margin-bottom: 2px;">📄 TXT</div>
-							<div style="opacity: 0.8; font-size: 10px;">纯文本</div>
+				<div style="margin-bottom: 16px;">
+					<h3 style="margin: 0 0 10px 0; font-size: 13px; color: var(--ge-panel-text);">导出格式</h3>
+					<div id="format-selector" style="display: flex; gap: 8px;">
+						<div class="format-option" data-format="txt" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+							<div style="font-weight: 600; margin-bottom: 2px;">TXT</div>
+							<div style="color: var(--ge-text-muted-2); font-size: 10px;">纯文本</div>
 						</div>
-						<div class="format-option" data-format="json" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
-							<div style="font-weight: 600; margin-bottom: 2px;">📊 JSON</div>
-							<div style="opacity: 0.8; font-size: 10px;">结构化</div>
+						<div class="format-option" data-format="json" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+							<div style="font-weight: 600; margin-bottom: 2px;">JSON</div>
+							<div style="color: var(--ge-text-muted-2); font-size: 10px;">结构化</div>
 						</div>
-						<div class="format-option" data-format="md" style="flex: 1; min-width: 0; padding: 10px; background: rgba(255,255,255,0.2); border-radius: 8px; text-align: center; cursor: pointer; transition: all 0.2s; font-size: 12px; border: 2px solid transparent;">
-							<div style="font-weight: 600; margin-bottom: 2px;">📝 MD</div>
-							<div style="opacity: 0.8; font-size: 10px;">Markdown</div>
+						<div class="format-option" data-format="md" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+							<div style="font-weight: 600; margin-bottom: 2px;">MD</div>
+							<div style="color: var(--ge-text-muted-2); font-size: 10px;">Markdown</div>
 						</div>
 					</div>
 				</div>
@@ -335,81 +593,77 @@
 					<!-- 滚动导出按钮 -->
 					<button id="capture-chat-scroll-button" style="
 						width: 100%;
-						padding: 14px;
-						background: linear-gradient(135deg, #42A5F5 0%, #1E88E5 100%);
-						color: white;
-						border: none;
+						padding: 12px;
+						background: var(--ge-primary);
+						color: var(--ge-on-primary);
+						border: 1px solid var(--ge-primary-border);
 						border-radius: 10px;
 						cursor: pointer;
-						font-size: 14px;
+						font-size: 13px;
 						font-weight: 600;
-						box-shadow: 0 4px 12px rgba(66, 165, 245, 0.3);
-						transition: all 0.3s ease;
+						transition: all 0.2s ease;
 					">${buttonTextStartScroll}</button>
 
 					<!-- Canvas导出按钮 -->
 					<button id="capture-canvas-button" style="
 						width: 100%;
-						padding: 14px;
-						background: linear-gradient(135deg, #66BB6A 0%, #4CAF50 100%);
-						color: white;
-						border: none;
+						padding: 12px;
+						background: var(--ge-success);
+						color: var(--ge-on-primary);
+						border: 1px solid var(--ge-success-border);
 						border-radius: 10px;
 						cursor: pointer;
-						font-size: 14px;
+						font-size: 13px;
 						font-weight: 600;
-						box-shadow: 0 4px 12px rgba(102, 187, 106, 0.3);
-						transition: all 0.3s ease;
+						transition: all 0.2s ease;
 					">${buttonTextCanvasExport}</button>
 
 					<!-- 组合导出按钮 -->
 					<button id="capture-combined-button" style="
 						width: 100%;
-						padding: 14px;
-						background: linear-gradient(135deg, #9C27B0 0%, #673AB7 100%);
-						color: white;
-						border: none;
+						padding: 12px;
+						background: var(--ge-neutral);
+						color: var(--ge-on-primary);
+						border: 1px solid var(--ge-neutral-border);
 						border-radius: 10px;
 						cursor: pointer;
-						font-size: 14px;
+						font-size: 13px;
 						font-weight: 600;
-						box-shadow: 0 4px 12px rgba(156, 39, 176, 0.3);
-						transition: all 0.3s ease;
+						transition: all 0.2s ease;
 					">${buttonTextCombinedExport}</button>
 
 					<!-- 停止按钮 -->
 					<button id="stop-scrolling-button" style="
 						width: 100%;
-						padding: 14px;
-						background: linear-gradient(135deg, #EF5350 0%, #F44336 100%);
-						color: white;
-						border: none;
+						padding: 12px;
+						background: var(--ge-danger);
+						color: var(--ge-on-primary);
+						border: 1px solid var(--ge-danger-border);
 						border-radius: 10px;
 						cursor: pointer;
-						font-size: 14px;
+						font-size: 13px;
 						font-weight: 600;
-						box-shadow: 0 4px 12px rgba(239, 83, 80, 0.3);
-						transition: all 0.3s ease;
+						transition: all 0.2s ease;
 						display: none;
 					">${buttonTextStopScroll}</button>
 				</div>
 
 				<!-- 状态信息 -->
 				<div id="extract-status-div" style="
-					margin-top: 20px;
-					padding: 12px;
-					background: rgba(255,255,255,0.1);
+					margin-top: 16px;
+					padding: 10px;
+					background: var(--ge-surface);
+					border: 1px solid var(--ge-border);
 					border-radius: 8px;
 					font-size: 12px;
-					line-height: 1.4;
+					line-height: 1.5;
 					display: none;
-					backdrop-filter: blur(10px);
-					border: 1px solid rgba(255,255,255,0.1);
+					color: var(--ge-text-muted);
 				"></div>
 
 				<!-- 版权信息 -->
-				<div style="margin-top: 30px; padding-top: 20px; border-top: 1px solid rgba(255,255,255,0.1); text-align: center; font-size: 11px; opacity: 0.6;">
-					v1.0.5 | sxuan © 2025
+				<div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ge-border); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
+					v1.0.7 | sxuan © 2025
 				</div>
 			</div>
 		`;
@@ -421,6 +675,7 @@
 		stopButtonScroll = document.getElementById('stop-scrolling-button');
 		statusDiv = document.getElementById('extract-status-div');
 		formatSelector = document.getElementById('format-selector');
+		conversationDirectoryContainer = document.getElementById('conversation-directory');
 
 		// 初始化格式选择器
 		initFormatSelector();
@@ -441,106 +696,116 @@
 		// 折叠按钮点击事件
 		toggleButton.addEventListener('click', togglePanel);
 
+		conversationDirectoryContainer.addEventListener('click', (event) => {
+			const target = event.target.closest('.gemini-conversation-directory-item');
+			if (!target) return;
+			const anchorId = target.dataset.anchorId;
+			if (!anchorId) return;
+			const anchorEl = document.getElementById(anchorId);
+			if (!anchorEl) return;
+			anchorEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+			target.classList.add('active');
+			window.setTimeout(() => target.classList.remove('active'), 1200);
+		});
+
 		// 添加样式
 		GM_addStyle(`
-			/* 按钮悬停和动画效果 */
 			#capture-chat-scroll-button:hover,
 			#capture-canvas-button:hover,
 			#capture-combined-button:hover,
 			#stop-scrolling-button:hover {
-				transform: translateY(-3px) scale(1.02);
-				box-shadow: 0 8px 25px rgba(0,0,0,0.15) !important;
+				filter: brightness(1.05);
+				transform: translateY(-1px);
 			}
-			
+
 			#capture-chat-scroll-button:active,
 			#capture-canvas-button:active,
 			#capture-combined-button:active,
 			#stop-scrolling-button:active {
-				transform: translateY(-1px) scale(0.98);
+				transform: translateY(0);
 			}
-			
-			/* 按钮禁用状态 */
+
 			#capture-chat-scroll-button:disabled,
 			#capture-canvas-button:disabled,
 			#capture-combined-button:disabled,
 			#stop-scrolling-button:disabled {
-				opacity: 0.5;
+				opacity: 0.6;
 				cursor: not-allowed;
 				transform: none !important;
-				background: linear-gradient(135deg, #999, #666) !important;
-				box-shadow: none !important;
+				background: var(--ge-neutral) !important;
+				border-color: var(--ge-neutral-border) !important;
 			}
-			
-			/* 成功/错误状态 */
+
 			.success {
-				background: linear-gradient(135deg, #4CAF50 0%, #2E7D32 100%) !important;
-				box-shadow: 0 6px 20px rgba(76, 175, 80, 0.4) !important;
+				background: var(--ge-success) !important;
+				border-color: var(--ge-success-border) !important;
 			}
 			.error {
-				background: linear-gradient(135deg, #F44336 0%, #C62828 100%) !important;
-				box-shadow: 0 6px 20px rgba(244, 67, 54, 0.4) !important;
+				background: var(--ge-danger) !important;
+				border-color: var(--ge-danger-border) !important;
 			}
-			
-			/* 格式选择器动效 */
-			.format-option {
-				transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1) !important;
-			}
+
 			.format-option:hover {
-				background: rgba(255,255,255,0.25) !important;
-				transform: translateY(-2px) scale(1.05);
-				box-shadow: 0 8px 20px rgba(0,0,0,0.15);
+				border-color: var(--ge-border-hover) !important;
 			}
 			.format-option.selected {
-				background: rgba(255,255,255,0.25) !important;
-				border-color: #4CAF50 !important;
-				box-shadow: 0 0 20px rgba(76, 175, 80, 0.4), inset 0 1px 3px rgba(255,255,255,0.2);
-				transform: scale(1.02);
+				border-color: var(--ge-success) !important;
 			}
-			.format-option.selected::before {
-				content: '✓';
-				position: absolute;
-				top: 6px;
-				right: 8px;
-				color: #4CAF50;
-				font-weight: bold;
-				font-size: 14px;
-				background: rgba(255,255,255,0.9);
-				border-radius: 50%;
-				width: 18px;
-				height: 18px;
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				box-shadow: 0 2px 6px rgba(0,0,0,0.15);
-			}
-			
-			/* 折叠按钮动效 */
-			#gemini-export-toggle {
-				transition: all 0.4s cubic-bezier(0.4, 0, 0.2, 1) !important;
-			}
+
 			#gemini-export-toggle:hover {
 				right: 8px;
-				box-shadow: -6px 0 20px rgba(0,0,0,0.35);
-				transform: translateY(-50%) scale(1.1);
-				background: linear-gradient(135deg, #7986cb 0%, #8e24aa 100%);
+				transform: translateY(-50%) scale(1.06);
+				background: var(--ge-primary-hover);
 			}
-			
-			/* 面板滚动条美化 */
+
 			#gemini-export-panel::-webkit-scrollbar {
 				width: 6px;
 			}
 			#gemini-export-panel::-webkit-scrollbar-track {
-				background: rgba(255,255,255,0.1);
-				border-radius: 3px;
+				background: var(--ge-panel-bg);
 			}
 			#gemini-export-panel::-webkit-scrollbar-thumb {
-				background: rgba(255,255,255,0.3);
+				background: var(--ge-scroll-thumb);
 				border-radius: 3px;
 			}
 			#gemini-export-panel::-webkit-scrollbar-thumb:hover {
-				background: rgba(255,255,255,0.5);
+				background: var(--ge-scroll-thumb-hover);
+			}
+
+			#conversation-directory::-webkit-scrollbar {
+				width: 6px;
+			}
+			#conversation-directory::-webkit-scrollbar-track {
+				background: var(--ge-panel-bg);
+			}
+			#conversation-directory::-webkit-scrollbar-thumb {
+				background: var(--ge-scroll-thumb);
+				border-radius: 3px;
+			}
+			#conversation-directory::-webkit-scrollbar-thumb:hover {
+				background: var(--ge-scroll-thumb-hover);
+			}
+
+			.gemini-conversation-directory-item {
+				padding: 8px 10px;
+				font-size: 12px;
+				line-height: 1.4;
+				color: var(--ge-panel-text);
+				border-bottom: 1px solid var(--ge-divider);
+				cursor: pointer;
+			}
+			.gemini-conversation-directory-item:hover {
+				background: var(--ge-surface-hover);
+			}
+			.gemini-conversation-directory-item.active {
+				outline: 1px solid var(--ge-success);
+				outline-offset: -1px;
 			}
 		`);
+
+		startConversationDirectoryObserver();
+		scheduleConversationDirectoryUpdate(0);
+		updateConversationDirectoryPanelPosition();
 
 		console.log("UI 元素创建完成");
 	}
@@ -588,6 +853,13 @@
 			toggleButton.innerHTML = '>';
 			toggleButton.style.right = '420px';
 		}
+		updateConversationDirectoryPanelPosition();
+	}
+
+	function updateConversationDirectoryPanelPosition() {
+		if (!conversationDirectoryPanel || !sidePanel) return;
+		const isOpen = sidePanel.style.right === '0px';
+		conversationDirectoryPanel.style.right = isOpen ? '420px' : '44px';
 	}
 
 	function updateStatus(message) {
@@ -981,7 +1253,7 @@
 
 			// 添加对话内容
 			if (deduplicatedScrollData && deduplicatedScrollData.length > 0) {
-				md += `## 💬 对话内容
+				md += `## 对话内容
 
 `;
 				deduplicatedScrollData.forEach((item, idx) => {
@@ -1013,7 +1285,7 @@ ${escapeMd(item.responseText)}
 
 			// 添加Canvas内容
 			if (canvasData && canvasData.length > 0) {
-				md += `## 🎨 Canvas 内容
+				md += `## Canvas 内容
 
 `;
 				canvasData.forEach((item, idx) => {
@@ -1143,6 +1415,7 @@ ${escapeMd(item.content)}
 		} else {
 			updateStatus(`滚动 ${scrollCount}/${MAX_SCROLL_ATTEMPTS}... 已收集 ${collectedData.size} 条记录。`);
 		}
+		scheduleConversationDirectoryUpdate(0);
 
 		return newlyFoundCount > 0 || dataUpdatedInExistingTurn;
 	}
@@ -1233,7 +1506,7 @@ ${escapeMd(item.content)}
 		const deduplicatedData = deduplicateData(sortedData);
 
 		function escapeMd(s) {
-			return s.replace(/`/g, '\u0060').replace(/</g, '&lt;'); // 简单避免破坏结构；代码块原样保存
+			return s.replace(/`/g, '\u0060').replace(/</g, '&lt;');
 		}
 		if (mode === 'txt') {
 			let header = context === 'scroll' ? 'Gemini 聊天记录 (滚动采集)' : 'Gemini 对话记录 (SDK 代码)';
@@ -1287,8 +1560,8 @@ ${escapeMd(item.content)}
 			turns.forEach(t => { if (collectedData.has(t)) sorted.push(collectedData.get(t)); });
 		}
 		if (!sorted.length) {
-			updateStatus('没有收集到任何有效滚动记录。'); // FIX 2025-09-08: 修复标点
-			alert('滚动结束后未能收集到任何聊天记录，无法导出。'); // FIX 2025-09-08: 补全字符串闭合
+			updateStatus('没有收集到任何有效滚动记录。');
+			alert('滚动结束后未能收集到任何聊天记录，无法导出。');
 			captureButtonScroll.textContent = buttonTextStartScroll; captureButtonScroll.disabled = false; captureButtonScroll.classList.remove('success', 'error'); updateStatus('');
 			return;
 		}
@@ -1305,8 +1578,8 @@ ${escapeMd(item.content)}
 		setTimeout(() => { captureButtonScroll.textContent = buttonTextStartScroll; captureButtonScroll.disabled = false; captureButtonScroll.classList.remove('success', 'error'); updateStatus(''); }, exportTimeout);
 	}
 
-	// TODO 2025-09-08: 后续可实现自动展开 Gemini 隐藏思维链（需要模拟点击“显示思路”按钮），当前以占位符标记�?
-	// TODO 2025-09-08: Markdown 正式格式化尚未实现，当前仅输出占位头部，保持向后兼容�?
+	// TODO 2025-09-08: 后续可实现自动展开 Gemini 隐藏思维链（需要模拟点击“显示思路”按钮），当前以占位符标记
+	// TODO 2025-09-08: Markdown 正式格式化尚未实现，当前仅输出占位头部，保持向后兼容
 
 	async function handleScrollExtraction() {
 		if (isScrolling) return;
@@ -1370,7 +1643,8 @@ ${escapeMd(item.content)}
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.0.5): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.0.7): 等待页面加载 (2.5秒)...");
+	startThemeSync();
 	setTimeout(createUI, 2500);
 
 })();
