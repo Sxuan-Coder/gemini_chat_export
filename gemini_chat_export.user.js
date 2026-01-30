@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini 聊天对话增强脚本
 // @namespace    http://tampermonkey.net/
-// @version      1.0.7
+// @version      1.1.0
 // @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
@@ -59,7 +59,7 @@
 	};
 
 	// --- 全局配置常量 ---
-	// UPDATED: 支持隐藏格式钩子 window.__GEMINI_EXPORT_FORMAT = 'txt'|'json'|'md'
+	__GEMINI_EXPORT_FORMAT = 'txt' | 'json' | 'md'
 	const buttonTextStartScroll = "滚动导出对话";
 	const buttonTextStopScroll = "停止滚动";
 	const buttonTextProcessingScroll = "处理滚动数据...";
@@ -111,6 +111,11 @@
 	let conversationDirectoryUpdateTimer = null;
 	let conversationDirectoryAnchorSeq = 0;
 	let conversationDirectoryLastSignature = '';
+	// 目录面板状态：折叠、拖拽
+	let directoryCollapsed = false;
+	let directoryDragState = { isDragging: false, startX: 0, startY: 0, startTop: 0, startRight: 0 };
+	const DIRECTORY_POS_KEY = 'gemini_export_directory_position';
+	const DIRECTORY_COLLAPSED_KEY = 'gemini_export_directory_collapsed';
 	// 主题同步：跟随 Gemini 页面深浅色主题
 	let themeObserver = null;
 	let themeUpdateTimer = null;
@@ -413,14 +418,30 @@
 		const results = [];
 		const geminiContainers = document.querySelectorAll('#chat-history .conversation-container');
 		if (geminiContainers && geminiContainers.length) {
+			const seenTexts = new Set();
 			geminiContainers.forEach((c) => {
-				const userTexts = Array.from(c.querySelectorAll('user-query .query-text-line, user-query .query-text p, user-query .query-text'))
-					.map(el => (el.innerText || '').trim())
-					.filter(Boolean);
-				if (!userTexts.length) return;
+				// 优先尝试获取最具体的文本元素，避免重复
+				let userText = '';
+				const queryTextLine = c.querySelector('user-query .query-text-line');
+				const queryTextP = c.querySelector('user-query .query-text p');
+				const queryText = c.querySelector('user-query .query-text');
+
+				if (queryTextLine) {
+					userText = (queryTextLine.innerText || '').trim();
+				} else if (queryTextP) {
+					userText = (queryTextP.innerText || '').trim();
+				} else if (queryText) {
+					userText = (queryText.innerText || '').trim();
+				}
+
+				if (!userText) return;
+				// 去重：避免相同文本多次出现
+				if (seenTexts.has(userText)) return;
+				seenTexts.add(userText);
+
 				const anchorId = ensureConversationAnchor(c);
 				if (!anchorId) return;
-				results.push({ anchorId, text: userTexts.join(' ') });
+				results.push({ anchorId, text: userText });
 			});
 			return results;
 		}
@@ -482,6 +503,91 @@
 		conversationDirectoryObserver.observe(root, { childList: true, subtree: true });
 	}
 
+	// 目录面板位置持久化
+	function loadDirectoryPosition() {
+		try {
+			const saved = localStorage.getItem(DIRECTORY_POS_KEY);
+			if (saved) return JSON.parse(saved);
+		} catch (_) { }
+		return null;
+	}
+
+	function saveDirectoryPosition(top, right) {
+		try {
+			localStorage.setItem(DIRECTORY_POS_KEY, JSON.stringify({ top, right }));
+		} catch (_) { }
+	}
+
+	function loadDirectoryCollapsed() {
+		try {
+			return localStorage.getItem(DIRECTORY_COLLAPSED_KEY) === 'true';
+		} catch (_) { }
+		return false;
+	}
+
+	function saveDirectoryCollapsed(collapsed) {
+		try {
+			localStorage.setItem(DIRECTORY_COLLAPSED_KEY, collapsed ? 'true' : 'false');
+		} catch (_) { }
+	}
+
+	// 目录面板折叠切换
+	function toggleDirectoryCollapse() {
+		if (!conversationDirectoryPanel || !conversationDirectoryContainer) return;
+		directoryCollapsed = !directoryCollapsed;
+		conversationDirectoryContainer.style.display = directoryCollapsed ? 'none' : 'block';
+		const toggleBtn = conversationDirectoryPanel.querySelector('.directory-toggle-btn');
+		if (toggleBtn) toggleBtn.textContent = directoryCollapsed ? '+' : '-';
+		saveDirectoryCollapsed(directoryCollapsed);
+	}
+
+	// 目录面板拖拽
+	function initDirectoryDrag() {
+		if (!conversationDirectoryPanel) return;
+		const header = conversationDirectoryPanel.querySelector('.directory-header');
+		if (!header) return;
+
+		header.style.cursor = 'move';
+
+		header.addEventListener('mousedown', (e) => {
+			// 点击折叠按钮时不启动拖拽
+			if (e.target.classList.contains('directory-toggle-btn')) return;
+			e.preventDefault();
+			const rect = conversationDirectoryPanel.getBoundingClientRect();
+			directoryDragState = {
+				isDragging: true,
+				startX: e.clientX,
+				startY: e.clientY,
+				startTop: rect.top,
+				startRight: window.innerWidth - rect.right
+			};
+			conversationDirectoryPanel.style.transition = 'none';
+		});
+
+		document.addEventListener('mousemove', (e) => {
+			if (!directoryDragState.isDragging) return;
+			const deltaX = e.clientX - directoryDragState.startX;
+			const deltaY = e.clientY - directoryDragState.startY;
+			let newTop = directoryDragState.startTop + deltaY;
+			let newRight = directoryDragState.startRight - deltaX;
+			// 边界限制
+			newTop = Math.max(10, Math.min(window.innerHeight - 100, newTop));
+			newRight = Math.max(10, Math.min(window.innerWidth - 100, newRight));
+			conversationDirectoryPanel.style.top = newTop + 'px';
+			conversationDirectoryPanel.style.right = newRight + 'px';
+		});
+
+		document.addEventListener('mouseup', () => {
+			if (!directoryDragState.isDragging) return;
+			directoryDragState.isDragging = false;
+			conversationDirectoryPanel.style.transition = '';
+			// 保存位置
+			const top = parseInt(conversationDirectoryPanel.style.top, 10);
+			const right = parseInt(conversationDirectoryPanel.style.right, 10);
+			saveDirectoryPosition(top, right);
+		});
+	}
+
 
 	// --- UI 界面创建与更新 ---
 	function createUI() {
@@ -531,27 +637,47 @@
 		`;
 		document.body.appendChild(sidePanel);
 
-		// 创建对话目录面板（独立于折叠侧栏）
+		// 创建对话目录面板（独立于折叠侧栏，支持折叠和拖拽）
 		conversationDirectoryPanel = document.createElement('div');
 		conversationDirectoryPanel.id = 'gemini-conversation-directory-panel';
+		// 加载保存的位置
+		const savedPos = loadDirectoryPosition();
+		const initTop = savedPos?.top ?? 90;
+		const initRight = savedPos?.right ?? 44;
 		conversationDirectoryPanel.style.cssText = `
 			position: fixed;
-			top: 90px;
-			right: 44px;
+			top: ${initTop}px;
+			right: ${initRight}px;
 			width: 280px;
-			max-height: 360px;
+			max-height: 400px;
 			background: var(--ge-panel-bg);
 			border: 1px solid var(--ge-border);
 			border-radius: 10px;
 			z-index: 9999;
 			overflow: hidden;
 			font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+			transition: right 0.3s ease;
+			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
 		`;
+		// 加载折叠状态
+		directoryCollapsed = loadDirectoryCollapsed();
 		conversationDirectoryPanel.innerHTML = `
-			<div style="padding: 12px; border-bottom: 1px solid var(--ge-border); color: var(--ge-panel-text); font-size: 13px; font-weight: 600;">对话目录</div>
-			<div id="conversation-directory" style="max-height: 320px; overflow: auto;"></div>
+			<div class="directory-header" style="padding: 10px 12px; border-bottom: 1px solid var(--ge-border); color: var(--ge-panel-text); font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; user-select: none;">
+				<span>对话目录</span>
+				<button class="directory-toggle-btn" style="width: 24px; height: 24px; border: none; background: var(--ge-surface); color: var(--ge-panel-text); border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; line-height: 1;">${directoryCollapsed ? '+' : '-'}</button>
+			</div>
+			<div id="conversation-directory" style="max-height: 340px; overflow: auto; display: ${directoryCollapsed ? 'none' : 'block'};"></div>
 		`;
 		document.body.appendChild(conversationDirectoryPanel);
+
+		// 绑定折叠按钮事件
+		const toggleBtn = conversationDirectoryPanel.querySelector('.directory-toggle-btn');
+		if (toggleBtn) {
+			toggleBtn.addEventListener('click', (e) => {
+				e.stopPropagation();
+				toggleDirectoryCollapse();
+			});
+		}
 
 		// 面板内容
 		sidePanel.innerHTML = `
@@ -663,7 +789,7 @@
 
 				<!-- 版权信息 -->
 				<div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ge-border); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
-					v1.0.7 | sxuan © 2025
+					v1.1.0 | sxuan © 2025-2026
 				</div>
 			</div>
 		`;
@@ -801,11 +927,20 @@
 				outline: 1px solid var(--ge-success);
 				outline-offset: -1px;
 			}
+
+			.directory-toggle-btn:hover {
+				background: var(--ge-surface-hover) !important;
+			}
+
+			.directory-header:hover {
+				background: var(--ge-surface);
+			}
 		`);
 
 		startConversationDirectoryObserver();
 		scheduleConversationDirectoryUpdate(0);
 		updateConversationDirectoryPanelPosition();
+		initDirectoryDrag();
 
 		console.log("UI 元素创建完成");
 	}
@@ -858,6 +993,9 @@
 
 	function updateConversationDirectoryPanelPosition() {
 		if (!conversationDirectoryPanel || !sidePanel) return;
+		// 仅在用户未手动拖拽过位置时，根据侧边栏状态调整
+		const savedPos = loadDirectoryPosition();
+		if (savedPos) return; // 用户已自定义位置，不自动调整
 		const isOpen = sidePanel.style.right === '0px';
 		conversationDirectoryPanel.style.right = isOpen ? '420px' : '44px';
 	}
@@ -873,71 +1011,157 @@
 
 	// --- 核心业务逻辑 (滚动导出) ---
 
-	// Canvas 内容提取和导出逻辑
-	function extractCanvasContent() {
+	// Canvas 内容提取和导出逻辑（支持 Monaco Editor 滚动提取）
+	async function extractCanvasContent() {
 		console.log("开始提取 Canvas 内容...");
 		const canvasData = [];
-		const seenContents = new Set(); // 用于去重
+		const seen = new Set();
+		const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-		// 提取当前页面显示的代码块
-		const codeBlocks = document.querySelectorAll('code-block, pre code, .code-block');
-		codeBlocks.forEach((block, index) => {
-			const codeContent = block.textContent || block.innerText;
-			if (codeContent && codeContent.trim()) {
-				const trimmedContent = codeContent.trim();
-				// 使用内容的前100个字符作为唯一性检查
-				const contentKey = trimmedContent.substring(0, 100);
-				if (!seenContents.has(contentKey)) {
-					seenContents.add(contentKey);
+		// 内部帮助函数：滚动提取 Monaco 内容（针对长文件虚拟滚动）
+		async function extractScrollableMonaco(panel) {
+			try {
+				const scrollable = panel.querySelector('.monaco-scrollable-element');
+				const linesContainer = panel.querySelector('.view-lines, .lines-content');
+				if (!scrollable || !linesContainer) return null;
+
+				const { scrollHeight, clientHeight } = scrollable;
+				// 只有当内容显著超过容器高度时才滚动
+				if (scrollHeight <= clientHeight + 50) return null;
+
+				const originalScrollTop = scrollable.scrollTop;
+				const lineMap = new Map();
+				let currentScroll = 0;
+				const maxAttempts = 150;
+
+				for (let i = 0; i < maxAttempts && currentScroll < scrollHeight; i++) {
+					scrollable.scrollTop = currentScroll;
+					await wait(80);
+					const lines = linesContainer.querySelectorAll('.view-line');
+					lines.forEach(line => {
+						const top = parseInt(line.style.top || '0', 10);
+						if (!isNaN(top)) lineMap.set(top, line.textContent || '');
+					});
+					currentScroll += clientHeight;
+				}
+				scrollable.scrollTop = originalScrollTop;
+
+				if (lineMap.size === 0) return null;
+				return Array.from(lineMap.entries()).sort((a, b) => a[0] - b[0]).map(e => e[1]).join('\n');
+			} catch (e) {
+				console.error('Scroll extraction failed', e);
+				return null;
+			}
+		}
+
+		// 查找所有的 immersive-panel 并锁定可见面板
+		const panels = Array.from(document.querySelectorAll('immersive-panel, code-immersive-panel'));
+		let targetPanel = panels.find(p => {
+			const rect = p.getBoundingClientRect();
+			return rect.width > 0 && rect.height > 0;
+		}) || panels[0];
+
+		if (targetPanel) {
+			// 切换到代码模式
+			const tabGroup = targetPanel.querySelector('mat-button-toggle-group');
+			if (tabGroup) {
+				const codeTab = Array.from(tabGroup.querySelectorAll('mat-button-toggle')).find(
+					tab => tab.textContent?.includes('代码') || tab.textContent?.toLowerCase().includes('code')
+				);
+				if (codeTab && !codeTab.classList.contains('mat-button-toggle-checked')) {
+					const btn = codeTab.querySelector('button');
+					if (btn) btn.click();
+					let attempts = 0;
+					while (attempts < 30) {
+						await wait(100);
+						if (targetPanel.querySelectorAll('.view-line').length > 5) break;
+						attempts++;
+					}
+				}
+			}
+
+			let codeContent = '';
+
+			// 策略1: 滚动提取 (针对长文件)
+			updateStatus('正在扫描 Canvas 代码...');
+			const scrolledContent = await extractScrollableMonaco(targetPanel);
+			if (scrolledContent) codeContent = scrolledContent;
+
+			// 策略2: 简单提取 (短文件或失败回退)
+			if (!codeContent) {
+				// 再次确认加载
+				let viewLines = targetPanel.querySelectorAll('.view-line');
+				// 如果行数过少，多等一会儿
+				if (viewLines.length <= 1) { await wait(500); viewLines = targetPanel.querySelectorAll('.view-line'); }
+
+				if (viewLines.length > 0) {
+					codeContent = Array.from(viewLines).map(line => line.textContent || '').join('\n').trim();
+				}
+
+				if (!codeContent) {
+					const rawEl = targetPanel.querySelector('.lines-content, .monaco-scrollable-element');
+					if (rawEl) codeContent = (rawEl.textContent || '').trim();
+				}
+
+				if (!codeContent) {
+					const monacoEditor = targetPanel.querySelector('.monaco-editor');
+					if (monacoEditor) codeContent = (monacoEditor.textContent || '').trim();
+				}
+			}
+
+			if (codeContent) {
+				const key = codeContent.substring(0, 100);
+				if (!seen.has(key)) {
+					seen.add(key);
+					const langHint = targetPanel.querySelector('[data-mode-id]')?.getAttribute('data-mode-id')
+						|| targetPanel.querySelector('.detected-link')?.textContent?.toLowerCase()
+						|| 'html';
 					canvasData.push({
-						type: 'code',
-						index: canvasData.length + 1,
-						content: trimmedContent,
-						language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown'
+						type: 'code', index: canvasData.length + 1, content: codeContent.trim(), language: langHint, source: 'canvas'
 					});
 				}
 			}
+		}
+
+		// 2. 提取页面中的代码块 (code-block)
+		const codeBlocks = document.querySelectorAll('code-block, pre code, .code-block');
+		codeBlocks.forEach((block) => {
+			// 跳过 immersive-panel 内部的，因为已经处理过了
+			if (block.closest('immersive-panel, code-immersive-panel')) return;
+
+			const codeContent = block.textContent || block.innerText;
+			if (!codeContent || !codeContent.trim()) return;
+			const trimmedContent = codeContent.trim();
+			const key = trimmedContent.substring(0, 100);
+			if (seen.has(key)) return;
+			seen.add(key);
+			canvasData.push({
+				type: 'code',
+				index: canvasData.length + 1,
+				content: trimmedContent,
+				language: block.querySelector('[data-lang]')?.getAttribute('data-lang') || 'unknown',
+				source: 'code-block'
+			});
 		});
 
-		// 提取响应内容中的文本
-		const responseElements = document.querySelectorAll('response-element, .model-response-text, .markdown');
-		responseElements.forEach((element, index) => {
-			// 跳过代码块，避免重复
-			if (!element.closest('code-block') && !element.querySelector('code-block')) {
-				const textContent = element.textContent || element.innerText;
-				if (textContent && textContent.trim()) {
-					const trimmedContent = textContent.trim();
-					// 使用内容的前100个字符作为唯一性检查
-					const contentKey = trimmedContent.substring(0, 100);
-					if (!seenContents.has(contentKey)) {
-						seenContents.add(contentKey);
-						canvasData.push({
-							type: 'text',
-							index: canvasData.length + 1,
-							content: trimmedContent
-						});
-					}
-				}
-			}
-		});
-
-		// 如果没有找到特定元素，尝试从整个聊天容器提取
+		// 3. 如果没有找到代码块，提取响应文本作为备用
 		if (canvasData.length === 0) {
-			const chatContainer = document.querySelector('chat-window-content, .conversation-container, model-response');
-			if (chatContainer) {
-				const allText = chatContainer.textContent || chatContainer.innerText;
-				if (allText && allText.trim()) {
-					const trimmedContent = allText.trim();
-					const contentKey = trimmedContent.substring(0, 100);
-					if (!seenContents.has(contentKey)) {
-						canvasData.push({
-							type: 'full_content',
-							index: 1,
-							content: trimmedContent
-						});
-					}
-				}
-			}
+			const responseElements = document.querySelectorAll('.markdown, .model-response-text');
+			responseElements.forEach((element) => {
+				if (element.closest('code-block') || element.querySelector('code-block')) return;
+				const textContent = element.textContent || element.innerText;
+				if (!textContent || !textContent.trim()) return;
+				const trimmedContent = textContent.trim();
+				const key = trimmedContent.substring(0, 100);
+				if (seen.has(key)) return;
+				seen.add(key);
+				canvasData.push({
+					type: 'text',
+					index: canvasData.length + 1,
+					content: trimmedContent,
+					source: 'response'
+				});
+			});
 		}
 
 		console.log(`Canvas 内容提取完成，共找到 ${canvasData.length} 个内容块（已去重）`);
@@ -1005,7 +1229,7 @@
 
 		try {
 			updateStatus('正在提取 Canvas 内容...');
-			const canvasData = extractCanvasContent();
+			const canvasData = await extractCanvasContent();
 
 			if (canvasData.length === 0) {
 				alert('未能找到任何 Canvas 内容，请确保页面上有代码块或文档内容。');
@@ -1055,7 +1279,7 @@
 		try {
 			// 第一步：提取Canvas内容
 			updateStatus('步骤 1/3: 提取 Canvas 内容...');
-			const canvasData = extractCanvasContent();
+			const canvasData = await extractCanvasContent();
 
 			// 第二步：滚动获取对话内容
 			updateStatus('步骤 2/3: 开始滚动获取对话内容...');
@@ -1643,7 +1867,7 @@ ${escapeMd(item.content)}
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.0.7): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.1.0): 等待页面加载 (2.5秒)...");
 	startThemeSync();
 	setTimeout(createUI, 2500);
 
