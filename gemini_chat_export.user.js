@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini 聊天对话增强脚本
 // @namespace    http://tampermonkey.net/
-// @version      1.1.0
+// @version      1.1.1
 // @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
@@ -17,63 +17,87 @@
 (function () {
 	'use strict';
 
+	// TrustedTypes 策略引用
+	let trustedHTMLPolicy = null;
+
 	if (window.trustedTypes && window.trustedTypes.createPolicy) {
 		try {
-			// 尝试创建默认策略
 			if (!window.trustedTypes.defaultPolicy) {
-				window.trustedTypes.createPolicy('default', {
+				trustedHTMLPolicy = window.trustedTypes.createPolicy('default', {
 					createHTML: (string) => string,
 					createScript: (string) => string,
 					createScriptURL: (string) => string
 				});
+			} else {
+				trustedHTMLPolicy = window.trustedTypes.defaultPolicy;
 			}
 		} catch (e) {
-			// 如果默认策略已存在，创建备用策略
 			try {
-				window.trustedTypes.createPolicy('userscript-fallback', {
+				trustedHTMLPolicy = window.trustedTypes.createPolicy('gemini-export-policy', {
 					createHTML: (string) => string,
 					createScript: (string) => string,
 					createScriptURL: (string) => string
 				});
 			} catch (e2) {
-				console.warn('TrustedTypes 策略创建失败，但脚本将继续运行', e2);
+				console.warn('TrustedTypes 策略创建失败，使用 DOM API 替代', e2);
 			}
 		}
 	}
 
-	// 额外的DOM操作安全包装
 	const safeSetInnerHTML = (element, html) => {
+		if (!element) return;
+
+		if (trustedHTMLPolicy) {
+			try {
+				element.innerHTML = trustedHTMLPolicy.createHTML(html);
+				return;
+			} catch (e) { }
+		}
+
+		if (window.trustedTypes && window.trustedTypes.defaultPolicy) {
+			try {
+				element.innerHTML = window.trustedTypes.defaultPolicy.createHTML(html);
+				return;
+			} catch (e) { }
+		}
+
+		if (!window.trustedTypes) {
+			element.innerHTML = html;
+			return;
+		}
+
 		try {
-			if (window.trustedTypes && window.trustedTypes.createPolicy) {
-				const policy = window.trustedTypes.defaultPolicy ||
-					window.trustedTypes.createPolicy('temp-policy', {
-						createHTML: (string) => string
-					});
-				element.innerHTML = policy.createHTML(html);
-			} else {
-				element.innerHTML = html;
+			const template = document.createElement('template');
+			if (element.setHTML) {
+				element.setHTML(html);
+				return;
 			}
+			while (element.firstChild) {
+				element.removeChild(element.firstChild);
+			}
+			const range = document.createRange();
+			range.selectNode(document.body);
+			const fragment = range.createContextualFragment(html);
+			element.appendChild(fragment);
 		} catch (e) {
-			// 回退到textContent
+			console.warn('safeSetInnerHTML 回退到纯文本', e);
 			element.textContent = html.replace(/<[^>]*>/g, '');
 		}
 	};
 
 	// --- 全局配置常量 ---
-	const __GEMINI_EXPORT_FORMAT = 'txt' | 'json' | 'md';
+	window.__GEMINI_EXPORT_FORMAT = window.__GEMINI_EXPORT_FORMAT || 'txt';
 	const buttonTextStartScroll = "滚动导出对话";
 	const buttonTextStopScroll = "停止滚动";
 	const buttonTextProcessingScroll = "处理滚动数据...";
 	const successTextScroll = "滚动导出对话成功!";
 	const errorTextScroll = "滚动导出失败";
 
-	// Canvas 导出相关常量
 	const buttonTextCanvasExport = "导出Canvas";
 	const buttonTextCanvasProcessing = "处理Canvas数据...";
 	const successTextCanvas = "Canvas 导出成功!";
 	const errorTextCanvas = "Canvas 导出失败";
 
-	// 组合导出相关常量
 	const buttonTextCombinedExport = "一键导出对话+Canvas";
 	const buttonTextCombinedProcessing = "处理组合数据...";
 	const successTextCombined = "组合导出成功!";
@@ -94,7 +118,6 @@
 	let scrollCount = 0;
 	let noChangeCounter = 0;
 
-	// --- UI 界面元素变量 ---
 	let captureButtonScroll = null;
 	let stopButtonScroll = null;
 	let captureButtonCanvas = null;
@@ -105,24 +128,20 @@
 	let sidePanel = null;
 	let toggleButton = null;
 	let formatSelector = null;
-	// 对话目录面板：独立于折叠侧栏，避免随侧栏一起隐藏
 	let conversationDirectoryPanel = null;
 	let conversationDirectoryContainer = null;
 	let conversationDirectoryObserver = null;
 	let conversationDirectoryUpdateTimer = null;
 	let conversationDirectoryAnchorSeq = 0;
 	let conversationDirectoryLastSignature = '';
-	// 目录面板状态：折叠、拖拽
 	let directoryCollapsed = false;
 	let directoryDragState = { isDragging: false, startX: 0, startY: 0, startTop: 0, startRight: 0 };
 	const DIRECTORY_POS_KEY = 'gemini_export_directory_position';
 	const DIRECTORY_COLLAPSED_KEY = 'gemini_export_directory_collapsed';
-	// 主题同步：跟随 Gemini 页面深浅色主题
 	let themeObserver = null;
 	let themeUpdateTimer = null;
 	let currentThemeMode = null;
 
-	// --- 辅助工具函数 ---
 	function delay(ms) {
 		return new Promise(resolve => setTimeout(resolve, ms));
 	}
@@ -271,10 +290,6 @@
 		return `${YYYY}${MM}${DD}_${hh}${mm}${ss}`;
 	}
 
-	/**
-	 * 用于从页面获取项目名称
-	 * @returns {string} - 清理后的项目名称，或一个默认名称
-	 */
 	function getProjectName() {
 		try {
 			const firstUser = document.querySelector('#chat-history user-query .query-text, #chat-history user-query .query-text-line, #chat-history user-query .query-text p');
@@ -465,7 +480,7 @@
 	}
 
 	function renderConversationDirectoryItems(items) {
-		conversationDirectoryContainer.innerHTML = '';
+		safeSetInnerHTML(conversationDirectoryContainer, '');
 		if (!items.length) {
 			const empty = document.createElement('div');
 			empty.textContent = '未检测到用户提问';
@@ -597,7 +612,7 @@
 		// 创建右侧折叠按钮
 		toggleButton = document.createElement('div');
 		toggleButton.id = 'gemini-export-toggle';
-		toggleButton.innerHTML = '<';
+		safeSetInnerHTML(toggleButton, '<');
 		toggleButton.style.cssText = `
 			position: fixed;
 			top: 50%;
@@ -662,13 +677,13 @@
 		`;
 		// 加载折叠状态
 		directoryCollapsed = loadDirectoryCollapsed();
-		conversationDirectoryPanel.innerHTML = `
+		safeSetInnerHTML(conversationDirectoryPanel, `
 			<div class="directory-header" style="padding: 10px 12px; border-bottom: 1px solid var(--ge-border); color: var(--ge-panel-text); font-size: 13px; font-weight: 600; display: flex; justify-content: space-between; align-items: center; user-select: none;">
 				<span>对话目录</span>
 				<button class="directory-toggle-btn" style="width: 24px; height: 24px; border: none; background: var(--ge-surface); color: var(--ge-panel-text); border-radius: 4px; cursor: pointer; font-size: 14px; font-weight: bold; line-height: 1;">${directoryCollapsed ? '+' : '-'}</button>
 			</div>
 			<div id="conversation-directory" style="max-height: 340px; overflow: auto; display: ${directoryCollapsed ? 'none' : 'block'};"></div>
-		`;
+		`);
 		document.body.appendChild(conversationDirectoryPanel);
 
 		// 绑定折叠按钮事件
@@ -681,7 +696,7 @@
 		}
 
 		// 面板内容
-		sidePanel.innerHTML = `
+		safeSetInnerHTML(sidePanel, `
 			<div style="padding: 20px; color: var(--ge-panel-text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;">
 				<div style="display: flex; align-items: center; margin-bottom: 16px;">
 					<div style="width: 4px; height: 18px; background: var(--ge-success); margin-right: 10px; border-radius: 2px;"></div>
@@ -790,10 +805,10 @@
 
 				<!-- 版权信息 -->
 				<div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ge-border); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
-					v1.1.0 | sxuan © 2025-2026
+					v1.1.1 | sxuan © 2025-2026
 				</div>
 			</div>
-		`;
+		`);
 
 		// 获取元素引用
 		captureButtonScroll = document.getElementById('capture-chat-scroll-button');
@@ -979,14 +994,12 @@
 		const isOpen = sidePanel.style.right === '0px';
 
 		if (isOpen) {
-			// 关闭面板
 			sidePanel.style.right = '-420px';
-			toggleButton.innerHTML = '<';
+			safeSetInnerHTML(toggleButton, '<');
 			toggleButton.style.right = '0';
 		} else {
-			// 打开面板
 			sidePanel.style.right = '0px';
-			toggleButton.innerHTML = '>';
+			safeSetInnerHTML(toggleButton, '>');
 			toggleButton.style.right = '420px';
 		}
 		updateConversationDirectoryPanelPosition();
@@ -994,9 +1007,8 @@
 
 	function updateConversationDirectoryPanelPosition() {
 		if (!conversationDirectoryPanel || !sidePanel) return;
-		// 仅在用户未手动拖拽过位置时，根据侧边栏状态调整
 		const savedPos = loadDirectoryPosition();
-		if (savedPos) return; // 用户已自定义位置，不自动调整
+		if (savedPos) return;
 		const isOpen = sidePanel.style.right === '0px';
 		conversationDirectoryPanel.style.right = isOpen ? '420px' : '44px';
 	}
@@ -1012,14 +1024,14 @@
 
 	// --- 核心业务逻辑 (滚动导出) ---
 
-	// Canvas 内容提取和导出逻辑（支持 Monaco Editor 滚动提取）
+	// Canvas 提取
 	async function extractCanvasContent() {
 		console.log("开始提取 Canvas 内容...");
 		const canvasData = [];
 		const seen = new Set();
 		const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
-		// 内部帮助函数：滚动提取 Monaco 内容（针对长文件虚拟滚动）
+		// 滚动提取 Monaco 内容
 		async function extractScrollableMonaco(panel) {
 			try {
 				const scrollable = panel.querySelector('.monaco-scrollable-element');
@@ -1027,7 +1039,6 @@
 				if (!scrollable || !linesContainer) return null;
 
 				const { scrollHeight, clientHeight } = scrollable;
-				// 只有当内容显著超过容器高度时才滚动
 				if (scrollHeight <= clientHeight + 50) return null;
 
 				const originalScrollTop = scrollable.scrollTop;
@@ -1055,7 +1066,7 @@
 			}
 		}
 
-		// 查找所有的 immersive-panel 并锁定可见面板
+		// 查找 immersive-panel
 		const panels = Array.from(document.querySelectorAll('immersive-panel, code-immersive-panel'));
 		let targetPanel = panels.find(p => {
 			const rect = p.getBoundingClientRect();
@@ -1063,7 +1074,7 @@
 		}) || panels[0];
 
 		if (targetPanel) {
-			// 切换到代码模式
+			// 切换代码模式
 			const tabGroup = targetPanel.querySelector('mat-button-toggle-group');
 			if (tabGroup) {
 				const codeTab = Array.from(tabGroup.querySelectorAll('mat-button-toggle')).find(
@@ -1083,16 +1094,12 @@
 
 			let codeContent = '';
 
-			// 策略1: 滚动提取 (针对长文件)
 			updateStatus('正在扫描 Canvas 代码...');
 			const scrolledContent = await extractScrollableMonaco(targetPanel);
 			if (scrolledContent) codeContent = scrolledContent;
 
-			// 策略2: 简单提取 (短文件或失败回退)
 			if (!codeContent) {
-				// 再次确认加载
 				let viewLines = targetPanel.querySelectorAll('.view-line');
-				// 如果行数过少，多等一会儿
 				if (viewLines.length <= 1) { await wait(500); viewLines = targetPanel.querySelectorAll('.view-line'); }
 
 				if (viewLines.length > 0) {
@@ -1124,10 +1131,9 @@
 			}
 		}
 
-		// 2. 提取页面中的代码块 (code-block)
+		// 提取代码块
 		const codeBlocks = document.querySelectorAll('code-block, pre code, .code-block');
 		codeBlocks.forEach((block) => {
-			// 跳过 immersive-panel 内部的，因为已经处理过了
 			if (block.closest('immersive-panel, code-immersive-panel')) return;
 
 			const codeContent = block.textContent || block.innerText;
@@ -1145,7 +1151,7 @@
 			});
 		});
 
-		// 3. 如果没有找到代码块，提取响应文本作为备用
+		// 提取响应文本
 		if (canvasData.length === 0) {
 			const responseElements = document.querySelectorAll('.markdown, .model-response-text');
 			responseElements.forEach((element) => {
@@ -1165,7 +1171,7 @@
 			});
 		}
 
-		console.log(`Canvas 内容提取完成，共找到 ${canvasData.length} 个内容块（已去重）`);
+		console.log(`Canvas 内容提取完成，共导出 ${canvasData.length} 个块`);
 		return canvasData;
 	}
 
@@ -1224,7 +1230,6 @@
 	}
 
 	async function handleCanvasExtraction() {
-		console.log("开始 Canvas 导出流程...");
 		captureButtonCanvas.disabled = true;
 		captureButtonCanvas.textContent = buttonTextCanvasProcessing;
 
@@ -1233,14 +1238,13 @@
 			const canvasData = await extractCanvasContent();
 
 			if (canvasData.length === 0) {
-				alert('未能找到任何 Canvas 内容，请确保页面上有代码块或文档内容。');
+				alert('未能找到内容，请确保页面上有代码块。');
 				captureButtonCanvas.textContent = `${errorTextCanvas}: 无内容`;
 				captureButtonCanvas.classList.add('error');
 			} else {
-				updateStatus(`正在格式化 ${canvasData.length} 个内容块...`);
+				updateStatus(`正在格式化 ${canvasData.length} 个块...`);
 				const exportData = formatCanvasDataForExport(canvasData, 'export');
 
-				// 创建下载
 				const a = document.createElement('a');
 				const url = URL.createObjectURL(exportData.blob);
 				a.href = url;
@@ -1252,16 +1256,14 @@
 
 				captureButtonCanvas.textContent = successTextCanvas;
 				captureButtonCanvas.classList.add('success');
-				updateStatus(`Canvas 导出成功: ${exportData.filename}`);
+				updateStatus(`导出成功: ${exportData.filename}`);
 			}
 		} catch (error) {
-			console.error('Canvas 导出过程中发生错误:', error);
-			updateStatus(`错误 (Canvas 导出): ${error.message}`);
-			alert(`Canvas 导出过程中发生错误: ${error.message}`);
+			console.error('Canvas 导出错误:', error);
+			updateStatus(`错误: ${error.message}`);
 			captureButtonCanvas.textContent = `${errorTextCanvas}: 处理出错`;
 			captureButtonCanvas.classList.add('error');
 		} finally {
-			// 3秒后重置按钮状态
 			setTimeout(() => {
 				captureButtonCanvas.textContent = buttonTextCanvasExport;
 				captureButtonCanvas.disabled = false;
@@ -1271,59 +1273,45 @@
 		}
 	}
 
-	// 组合导出功能：同时导出对话和Canvas内容
+	// 组合导出
 	async function handleCombinedExtraction() {
-		console.log("开始组合导出流程...");
 		captureButtonCombined.disabled = true;
 		captureButtonCombined.textContent = buttonTextCombinedProcessing;
 
 		try {
-			// 第一步：提取Canvas内容
-			updateStatus('步骤 1/3: 提取 Canvas 内容...');
+			updateStatus('1/3: 提取 Canvas...');
 			const canvasData = await extractCanvasContent();
 
-			// 第二步：滚动获取对话内容
-			updateStatus('步骤 2/3: 开始滚动获取对话内容...');
+			updateStatus('2/3: 滚动获取对话...');
 
-			// 清空之前的数据
 			collectedData.clear();
 			isScrolling = true;
 			scrollCount = 0;
 			noChangeCounter = 0;
 
-			// 显示停止按钮
 			stopButtonScroll.style.display = 'block';
 			stopButtonScroll.disabled = false;
 			stopButtonScroll.textContent = buttonTextStopScroll;
 
-			// 先滚动到顶部
 			const scroller = getMainScrollerElement_AiStudio();
 			if (scroller) {
-				updateStatus('步骤 2/3: 滚动到顶部...');
 				const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
-				if (isWindowScroller) {
-					window.scrollTo({ top: 0, behavior: 'smooth' });
-				} else {
-					scroller.scrollTo({ top: 0, behavior: 'smooth' });
-				}
+				if (isWindowScroller) window.scrollTo({ top: 0, behavior: 'smooth' });
+				else scroller.scrollTo({ top: 0, behavior: 'smooth' });
 				await delay(1500);
 			}
 
-			// 执行滚动导出
 			const scrollSuccess = await autoScrollDown_AiStudio();
 			if (scrollSuccess !== false) {
-				updateStatus('步骤 2/3: 处理滚动数据...');
+				updateStatus('2/3: 处理对话数据...');
 				await delay(500);
 				extractDataIncremental_AiStudio();
 				await delay(200);
 			} else {
-				throw new Error('滚动获取对话内容失败');
+				throw new Error('滚动失败');
 			}
 
-			// 第三步：合并数据并导出
-			updateStatus('步骤 3/3: 合并数据并生成文件...');
-
-			// 获取滚动数据
+			updateStatus('3/3: 合并导出...');
 			let scrollData = [];
 			if (document.querySelector('#chat-history .conversation-container')) {
 				const cs = document.querySelectorAll('#chat-history .conversation-container');
@@ -1333,10 +1321,8 @@
 				turns.forEach(t => { if (collectedData.has(t)) scrollData.push(collectedData.get(t)); });
 			}
 
-			// 组合数据并导出
 			const combinedData = formatCombinedDataForExport(scrollData, canvasData);
 
-			// 创建下载
 			const a = document.createElement('a');
 			const url = URL.createObjectURL(combinedData.blob);
 			a.href = url;
@@ -1348,20 +1334,16 @@
 
 			captureButtonCombined.textContent = successTextCombined;
 			captureButtonCombined.classList.add('success');
-			updateStatus(`组合导出成功: ${combinedData.filename}`);
+			updateStatus(`成功: ${combinedData.filename}`);
 
 		} catch (error) {
-			console.error('组合导出过程中发生错误:', error);
-			updateStatus(`错误 (组合导出): ${error.message}`);
-			alert(`组合导出过程中发生错误: ${error.message}`);
-			captureButtonCombined.textContent = `${errorTextCombined}: 处理出错`;
+			console.error('组合导出错误:', error);
+			updateStatus(`错误: ${error.message}`);
+			captureButtonCombined.textContent = `${errorTextCombined}: 出错`;
 			captureButtonCombined.classList.add('error');
 		} finally {
-			// 隐藏停止按钮
 			stopButtonScroll.style.display = 'none';
 			isScrolling = false;
-
-			// 3秒后重置按钮状态
 			setTimeout(() => {
 				captureButtonCombined.textContent = buttonTextCombinedExport;
 				captureButtonCombined.disabled = false;
@@ -1868,7 +1850,7 @@ ${escapeMd(item.content)}
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.1.0): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.1.1): 等待页面加载 (2.5秒)...");
 	startThemeSync();
 	setTimeout(createUI, 2500);
 

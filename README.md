@@ -1,6 +1,20 @@
-# Google Gemini 聊天记录导出器
+# AIhub Enhenced AI对话导出增强插件
 
 🚀 一键导出 Google Gemini 网页端的聊天对话记录，支持多种格式（TXT/JSON/Markdown），并提供智能导航目录。
+
+**当前版本：v1.1.1**
+
+> **推荐使用 Chrome 插件版** 🔥  
+> 我们推出了功能更强大的 **Chrome 插件版本**，支持：
+>
+> - **多平台支持**：Gemini、GPT、Grok 等主流 AI 聊天平台
+> - **对话目录增强**：智能提取对话结构，快速导航定位，支持拖拽移动
+> - **一键导出**：更稳定的导出体验，支持批量操作
+> - **持续更新**：更快的功能迭代和问题修复
+>
+> 👉 [前往 AIhubEnhenced 仓库下载插件](https://github.com/Sxuan-Coder/AIhubEnhenced/releases)（支持 Chrome、Edge 等浏览器）
+
+---
 
 ## ✨ 主要功能
 
@@ -15,6 +29,15 @@
 - **安全可靠**：遵循 TrustedHTML 安全策略，兼容最新版 Chrome/Edge 浏览器。
 
 ## 🛠️ 安装方法
+
+### Chrome 插件版（推荐）
+
+1. 下载 [chrome插件](https://github.com/Sxuan-Coder/AIhubEnhenced/releases) 插件包
+2. 打开浏览器扩展管理页面（Chrome: `chrome://extensions/` | Edge: `edge://extensions/`）
+3. 开启右上角的"开发者模式"
+4. 将下载的 ZIP 压缩包直接拖拽到扩展管理页面即可完成安装
+
+### 用户脚本版
 
 1. 安装浏览器扩展管理器（如 [Tampermonkey](https://www.tampermonkey.net/)）
 2. 下载并复制 [gemini_chat_export.user.js](https://raw.githubusercontent.com/Sxuan-Coder/gemini_chat_export/main/gemini_chat_export.user.js) 脚本内容
@@ -46,17 +69,9 @@
 
 ## 📁 导出格式说明
 
-- **Markdown (推荐)**：支持折叠显示 AI 的思维链（Thought Process），结构最清晰。
+- **Markdown (推荐)**：结构最清晰。
 - **JSON**：标准结构化数据，适合导入到其他工具或进行数据分析。
 - **TXT**：最通用的纯文本格式，包含清晰的分隔线。
-
-## ⚙️ 技术参数 (脚本内可调)
-
-```javascript
-const SCROLL_DELAY_MS = 1000; // 滚动间隔时间（毫秒）
-const MAX_SCROLL_ATTEMPTS = 300; // 最大滚动次数，防止无限死循环
-const SCROLL_INCREMENT_FACTOR = 0.85; // 滚动速度调整因子
-```
 
 ## 🔧 故障排除
 
