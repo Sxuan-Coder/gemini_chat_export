@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Gemini 聊天对话增强脚本
 // @namespace    http://tampermonkey.net/
-// @version      1.1.1
+// @version      1.2.0
 // @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
@@ -141,6 +141,7 @@
 	let themeObserver = null;
 	let themeUpdateTimer = null;
 	let currentThemeMode = null;
+		let toastContainer = null;
 
 	function delay(ms) {
 		return new Promise(resolve => setTimeout(resolve, ms));
@@ -185,52 +186,66 @@
 
 	function applyThemeVariables(mode) {
 		const darkVars = {
-			'--ge-panel-bg': '#111827',
+			'--ge-panel-bg': 'rgba(30, 30, 45, 0.85)',
 			'--ge-panel-text': '#F9FAFB',
 			'--ge-text-muted': '#D1D5DB',
 			'--ge-text-muted-2': '#9CA3AF',
-			'--ge-border': '#374151',
-			'--ge-border-hover': '#6B7280',
-			'--ge-surface': '#1F2937',
-			'--ge-surface-2': '#111827',
-			'--ge-surface-hover': '#1F2937',
-			'--ge-divider': '#1F2937',
-			'--ge-primary': '#1E40AF',
-			'--ge-primary-hover': '#1D4ED8',
-			'--ge-primary-border': '#1D4ED8',
-			'--ge-on-primary': '#F9FAFB',
-			'--ge-success': '#059669',
-			'--ge-success-border': '#047857',
-			'--ge-danger': '#DC2626',
-			'--ge-danger-border': '#B91C1C',
-			'--ge-neutral': '#374151',
-			'--ge-neutral-border': '#4B5563',
-			'--ge-scroll-thumb': '#374151',
-			'--ge-scroll-thumb-hover': '#4B5563'
+			'--ge-border': 'rgba(255, 255, 255, 0.15)',
+			'--ge-border-hover': 'rgba(255, 255, 255, 0.35)',
+			'--ge-surface': 'rgba(255, 255, 255, 0.08)',
+			'--ge-surface-2': 'rgba(30, 30, 45, 0.95)',
+			'--ge-surface-hover': 'rgba(255, 255, 255, 0.12)',
+			'--ge-divider': 'rgba(255, 255, 255, 0.08)',
+			'--ge-primary': '#3b82f6',
+			'--ge-primary-hover': '#60a5fa',
+			'--ge-primary-border': '#3b82f6',
+			'--ge-on-primary': '#FFFFFF',
+			'--ge-success': '#10b981',
+			'--ge-success-border': '#10b981',
+			'--ge-danger': '#ef4444',
+			'--ge-danger-border': '#ef4444',
+			'--ge-neutral': '#64748b',
+			'--ge-neutral-border': '#64748b',
+			'--ge-scroll-thumb': 'rgba(255, 255, 255, 0.2)',
+			'--ge-scroll-thumb-hover': 'rgba(255, 255, 255, 0.35)',
+			'--ge-accent': '#f59e0b',
+			'--ge-gradient-primary': 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+			'--ge-gradient-success': 'linear-gradient(135deg, #11998e 0%, #10b981 100%)',
+			'--ge-gradient-danger': 'linear-gradient(135deg, #ed213a 0%, #ef4444 100%)',
+			'--ge-glass-blur': 'blur(20px) saturate(180%)',
+			'--ge-glass-shadow': '0 12px 48px rgba(31, 38, 135, 0.25)',
+			'--ge-font-family': "'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
 		};
 		const lightVars = {
-			'--ge-panel-bg': '#F9FAFB',
-			'--ge-panel-text': '#111827',
-			'--ge-text-muted': '#374151',
+			'--ge-panel-bg': 'rgba(255, 255, 255, 0.75)',
+			'--ge-panel-text': '#1F2937',
+			'--ge-text-muted': '#4B5563',
 			'--ge-text-muted-2': '#6B7280',
-			'--ge-border': '#E5E7EB',
-			'--ge-border-hover': '#9CA3AF',
-			'--ge-surface': '#FFFFFF',
-			'--ge-surface-2': '#F3F4F6',
-			'--ge-surface-hover': '#F3F4F6',
-			'--ge-divider': '#E5E7EB',
-			'--ge-primary': '#1E40AF',
-			'--ge-primary-hover': '#1D4ED8',
-			'--ge-primary-border': '#1D4ED8',
-			'--ge-on-primary': '#F9FAFB',
-			'--ge-success': '#059669',
-			'--ge-success-border': '#047857',
-			'--ge-danger': '#DC2626',
-			'--ge-danger-border': '#B91C1C',
-			'--ge-neutral': '#374151',
-			'--ge-neutral-border': '#4B5563',
-			'--ge-scroll-thumb': '#D1D5DB',
-			'--ge-scroll-thumb-hover': '#9CA3AF'
+			'--ge-border': 'rgba(255, 255, 255, 0.9)',
+			'--ge-border-hover': 'rgba(255, 255, 255, 0.6)',
+			'--ge-surface': 'rgba(255, 255, 255, 0.5)',
+			'--ge-surface-2': 'rgba(255, 255, 255, 0.9)',
+			'--ge-surface-hover': 'rgba(255, 255, 255, 0.65)',
+			'--ge-divider': 'rgba(255, 255, 255, 0.7)',
+			'--ge-primary': '#3b82f6',
+			'--ge-primary-hover': '#2563eb',
+			'--ge-primary-border': '#3b82f6',
+			'--ge-on-primary': '#FFFFFF',
+			'--ge-success': '#10b981',
+			'--ge-success-border': '#10b981',
+			'--ge-danger': '#ef4444',
+			'--ge-danger-border': '#ef4444',
+			'--ge-neutral': '#64748b',
+			'--ge-neutral-border': '#64748b',
+			'--ge-scroll-thumb': 'rgba(0, 0, 0, 0.15)',
+			'--ge-scroll-thumb-hover': 'rgba(0, 0, 0, 0.3)',
+			'--ge-accent': '#f59e0b',
+			'--ge-gradient-primary': 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)',
+			'--ge-gradient-success': 'linear-gradient(135deg, #11998e 0%, #10b981 100%)',
+			'--ge-gradient-danger': 'linear-gradient(135deg, #ed213a 0%, #ef4444 100%)',
+			'--ge-glass-blur': 'blur(20px) saturate(180%)',
+			'--ge-glass-shadow': '0 12px 48px rgba(31, 38, 135, 0.15)',
+			'--ge-font-family': "'Outfit', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
 		};
 
 		const vars = mode === 'light' ? lightVars : darkVars;
@@ -619,10 +634,11 @@
 			right: 0;
 			width: 40px;
 			height: 60px;
-			background: var(--ge-primary);
+			background: var(--ge-gradient-primary);
 			color: var(--ge-on-primary);
-			border: none;
-			border-radius: 20px 0 0 20px;
+			border: 1px solid rgba(255, 255, 255, 0.3);
+			border-right: none;
+			border-radius: 16px 0 0 16px;
 			cursor: pointer;
 			z-index: 10001;
 			display: flex;
@@ -630,8 +646,10 @@
 			justify-content: center;
 			font-size: 18px;
 			font-weight: bold;
-			box-shadow: none;
-			transition: all 0.3s ease;
+			box-shadow: var(--ge-glass-shadow);
+			backdrop-filter: var(--ge-glass-blur);
+			-webkit-backdrop-filter: var(--ge-glass-blur);
+			transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
 			transform: translateY(-50%);
 		`;
 		document.body.appendChild(toggleButton);
@@ -642,14 +660,18 @@
 		sidePanel.style.cssText = `
 			position: fixed;
 			top: 0;
-			right: -400px;
+			right: -420px;
 			width: 400px;
 			height: 100vh;
 			background: var(--ge-panel-bg);
+			backdrop-filter: var(--ge-glass-blur);
+			-webkit-backdrop-filter: var(--ge-glass-blur);
+			border-left: 1px solid var(--ge-border);
 			z-index: 10000;
-			transition: right 0.3s ease;
-			box-shadow: none;
+			transition: right 200ms cubic-bezier(0.4, 0, 0.2, 1);
+			box-shadow: var(--ge-glass-shadow);
 			overflow-y: auto;
+			font-family: var(--ge-font-family);
 		`;
 		document.body.appendChild(sidePanel);
 
@@ -667,13 +689,15 @@
 			width: 280px;
 			max-height: 400px;
 			background: var(--ge-panel-bg);
+			backdrop-filter: var(--ge-glass-blur);
+			-webkit-backdrop-filter: var(--ge-glass-blur);
 			border: 1px solid var(--ge-border);
-			border-radius: 10px;
+			border-radius: 12px;
 			z-index: 9999;
 			overflow: hidden;
-			font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-			transition: right 0.3s ease;
-			box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+			font-family: var(--ge-font-family);
+			transition: right 200ms cubic-bezier(0.4, 0, 0.2, 1);
+			box-shadow: var(--ge-glass-shadow);
 		`;
 		// 加载折叠状态
 		directoryCollapsed = loadDirectoryCollapsed();
@@ -697,33 +721,33 @@
 
 		// 面板内容
 		safeSetInnerHTML(sidePanel, `
-			<div style="padding: 20px; color: var(--ge-panel-text); font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;">
-				<div style="display: flex; align-items: center; margin-bottom: 16px;">
-					<div style="width: 4px; height: 18px; background: var(--ge-success); margin-right: 10px; border-radius: 2px;"></div>
-					<h2 style="margin: 0; font-size: 16px; font-weight: 600;">Gemini 导出助手</h2>
+			<div style="padding: 24px 20px; color: var(--ge-panel-text); font-family: var(--ge-font-family);">
+				<div style="display: flex; align-items: center; margin-bottom: 20px;">
+					<div style="width: 4px; height: 20px; background: var(--ge-accent); margin-right: 10px; border-radius: 2px;"></div>
+					<h2 style="margin: 0; font-size: 18px; font-weight: 600;">Gemini 导出助手</h2>
 				</div>
-				<p style="margin: 0 0 16px 0; font-size: 12px; color: var(--ge-text-muted); line-height: 1.5;">一键导出聊天记录与 Canvas 内容</p>
+				<p style="margin: 0 0 20px 0; font-size: 13px; color: var(--ge-text-muted); line-height: 1.5;">一键导出聊天记录与 Canvas 内容</p>
 
-				<div style="background: var(--ge-surface); border: 1px solid var(--ge-border); border-radius: 10px; padding: 12px; margin-bottom: 16px;">
-					<h3 style="margin: 0 0 8px 0; font-size: 13px; color: var(--ge-panel-text);">使用提示</h3>
+				<div style="background: var(--ge-surface); border: 1px solid var(--ge-border); border-radius: 12px; padding: 14px; margin-bottom: 20px; backdrop-filter: blur(10px);">
+					<h3 style="margin: 0 0 10px 0; font-size: 13px; color: var(--ge-panel-text); font-weight: 600;">使用提示</h3>
 					<div style="font-size: 12px; color: var(--ge-text-muted); line-height: 1.6;">
 						<div style="margin-bottom: 6px;">导出前建议先滚动到对话顶部，避免缺失</div>
 						<div>如页面结构更新导致无法识别，请更新选择器</div>
 					</div>
 				</div>
 
-				<div style="margin-bottom: 16px;">
-					<h3 style="margin: 0 0 10px 0; font-size: 13px; color: var(--ge-panel-text);">导出格式</h3>
-					<div id="format-selector" style="display: flex; gap: 8px;">
-						<div class="format-option" data-format="txt" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+				<div style="margin-bottom: 20px;">
+					<h3 style="margin: 0 0 12px 0; font-size: 13px; color: var(--ge-panel-text); font-weight: 600;">导出格式</h3>
+					<div id="format-selector" style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px;">
+						<div class="format-option aihub-format-btn" data-format="txt" style="padding: 12px 8px; background: var(--ge-surface); border-radius: 12px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative; transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);">
 							<div style="font-weight: 600; margin-bottom: 2px;">TXT</div>
 							<div style="color: var(--ge-text-muted-2); font-size: 10px;">纯文本</div>
 						</div>
-						<div class="format-option" data-format="json" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+						<div class="format-option aihub-format-btn" data-format="json" style="padding: 12px 8px; background: var(--ge-surface); border-radius: 12px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative; transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);">
 							<div style="font-weight: 600; margin-bottom: 2px;">JSON</div>
 							<div style="color: var(--ge-text-muted-2); font-size: 10px;">结构化</div>
 						</div>
-						<div class="format-option" data-format="md" style="flex: 1; padding: 10px; background: var(--ge-surface); border-radius: 8px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative;">
+						<div class="format-option aihub-format-btn" data-format="md" style="padding: 12px 8px; background: var(--ge-surface); border-radius: 12px; text-align: center; cursor: pointer; font-size: 12px; border: 1px solid var(--ge-border); position: relative; transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);">
 							<div style="font-weight: 600; margin-bottom: 2px;">MD</div>
 							<div style="color: var(--ge-text-muted-2); font-size: 10px;">Markdown</div>
 						</div>
@@ -733,79 +757,99 @@
 				<!-- 功能按钮区域 -->
 				<div id="button-container" style="display: flex; flex-direction: column; gap: 12px;">
 					<!-- 滚动导出按钮 -->
-					<button id="capture-chat-scroll-button" style="
+					<button id="capture-chat-scroll-button" class="aihub-button aihub-button-primary" style="
 						width: 100%;
-						padding: 12px;
-						background: var(--ge-primary);
+						padding: 14px;
+						background: var(--ge-gradient-primary);
 						color: var(--ge-on-primary);
-						border: 1px solid var(--ge-primary-border);
-						border-radius: 10px;
+						border: none;
+						border-radius: 99px;
 						cursor: pointer;
-						font-size: 13px;
+						font-size: 14px;
 						font-weight: 600;
-						transition: all 0.2s ease;
+						font-family: var(--ge-font-family);
+						transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+						box-shadow: 0 4px 15px rgba(102, 126, 234, 0.35);
 					">${buttonTextStartScroll}</button>
 
 					<!-- Canvas导出按钮 -->
-					<button id="capture-canvas-button" style="
+					<button id="capture-canvas-button" class="aihub-button aihub-button-success" style="
 						width: 100%;
-						padding: 12px;
-						background: var(--ge-success);
+						padding: 14px;
+						background: var(--ge-gradient-success);
 						color: var(--ge-on-primary);
-						border: 1px solid var(--ge-success-border);
-						border-radius: 10px;
+						border: none;
+						border-radius: 99px;
 						cursor: pointer;
-						font-size: 13px;
+						font-size: 14px;
 						font-weight: 600;
-						transition: all 0.2s ease;
+						font-family: var(--ge-font-family);
+						transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+						box-shadow: 0 4px 15px rgba(16, 185, 129, 0.35);
 					">${buttonTextCanvasExport}</button>
 
 					<!-- 组合导出按钮 -->
-					<button id="capture-combined-button" style="
+					<button id="capture-combined-button" class="aihub-button aihub-button-neutral" style="
 						width: 100%;
-						padding: 12px;
-						background: var(--ge-neutral);
-						color: var(--ge-on-primary);
-						border: 1px solid var(--ge-neutral-border);
-						border-radius: 10px;
+						padding: 14px;
+						background: var(--ge-surface);
+						color: var(--ge-panel-text);
+						border: 1px solid var(--ge-border);
+						border-radius: 99px;
 						cursor: pointer;
-						font-size: 13px;
+						font-size: 14px;
 						font-weight: 600;
-						transition: all 0.2s ease;
+						font-family: var(--ge-font-family);
+						transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+						box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 					">${buttonTextCombinedExport}</button>
 
 					<!-- 停止按钮 -->
-					<button id="stop-scrolling-button" style="
+					<button id="stop-scrolling-button" class="aihub-button aihub-button-danger" style="
 						width: 100%;
-						padding: 12px;
-						background: var(--ge-danger);
+						padding: 14px;
+						background: var(--ge-gradient-danger);
 						color: var(--ge-on-primary);
-						border: 1px solid var(--ge-danger-border);
-						border-radius: 10px;
+						border: none;
+						border-radius: 99px;
 						cursor: pointer;
-						font-size: 13px;
+						font-size: 14px;
 						font-weight: 600;
-						transition: all 0.2s ease;
+						font-family: var(--ge-font-family);
+						transition: all 200ms cubic-bezier(0.4, 0, 0.2, 1);
+						box-shadow: 0 4px 15px rgba(239, 68, 68, 0.35);
 						display: none;
 					">${buttonTextStopScroll}</button>
 				</div>
 
 				<!-- 状态信息 -->
-				<div id="extract-status-div" style="
-					margin-top: 16px;
-					padding: 10px;
+				<div id="extract-status-div" class="aihub-status" style="
+					margin-top: 20px;
+					padding: 12px 14px;
 					background: var(--ge-surface);
 					border: 1px solid var(--ge-border);
-					border-radius: 8px;
+					border-radius: 12px;
 					font-size: 12px;
 					line-height: 1.5;
 					display: none;
 					color: var(--ge-text-muted);
+					backdrop-filter: blur(10px);
 				"></div>
 
+				<!-- 进度条 -->
+				<div id="export-progress-container" style="margin-top: 16px; display: none;">
+					<div class="aihub-progress-bar" style="height: 6px; background: var(--ge-surface); border-radius: 3px; overflow: hidden;">
+						<div id="export-progress-fill" style="height: 100%; width: 0%; background: var(--ge-gradient-primary); border-radius: 3px; transition: width 200ms ease;"></div>
+					</div>
+				</div>
+
+				<!-- Toast 容器 -->
+				<div id="aihub-toast-container" style="position: fixed; top: 20px; right: 20px; z-index: 10010; display: flex; flex-direction: column; gap: 10px;"></div>
+
 				<!-- 版权信息 -->
-				<div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid var(--ge-border); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
-					v1.1.1 | sxuan © 2025-2026
+				<div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--ge-divider); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
+					<div style="margin-bottom: 6px;">v1.2.0 | sxuan © 2025-2026</div>
+					<a href="https://github.com/Sxuan-Coder/gemini_chat_export" target="_blank" style="color: var(--ge-primary); text-decoration: none; font-size: 11px;">GitHub</a>
 				</div>
 			</div>
 		`);
@@ -852,59 +896,69 @@
 
 		// 添加样式
 		GM_addStyle(`
-			#capture-chat-scroll-button:hover,
-			#capture-canvas-button:hover,
-			#capture-combined-button:hover,
-			#stop-scrolling-button:hover {
-				filter: brightness(1.05);
-				transform: translateY(-1px);
+			/* 胶囊按钮悬停效果 */
+			.aihub-button:hover {
+				transform: translateY(-2px);
+				filter: brightness(1.08);
 			}
-
-			#capture-chat-scroll-button:active,
-			#capture-canvas-button:active,
-			#capture-combined-button:active,
-			#stop-scrolling-button:active {
+			.aihub-button:active {
 				transform: translateY(0);
+				filter: brightness(0.95);
 			}
-
-			#capture-chat-scroll-button:disabled,
-			#capture-canvas-button:disabled,
-			#capture-combined-button:disabled,
-			#stop-scrolling-button:disabled {
+			.aihub-button:disabled {
 				opacity: 0.6;
 				cursor: not-allowed;
 				transform: none !important;
-				background: var(--ge-neutral) !important;
-				border-color: var(--ge-neutral-border) !important;
+				filter: grayscale(0.5) !important;
 			}
 
+			/* 主按钮 */
+			.aihub-button-primary:hover {
+				box-shadow: 0 6px 20px rgba(102, 126, 234, 0.5) !important;
+			}
+			/* 成功按钮 */
+			.aihub-button-success:hover {
+				box-shadow: 0 6px 20px rgba(16, 185, 129, 0.5) !important;
+			}
+			/* 危险按钮 */
+			.aihub-button-danger:hover {
+				box-shadow: 0 6px 20px rgba(239, 68, 68, 0.5) !important;
+			}
+
+			/* 成功/错误状态 */
 			.success {
-				background: var(--ge-success) !important;
-				border-color: var(--ge-success-border) !important;
+				background: var(--ge-gradient-success) !important;
+				box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4) !important;
 			}
 			.error {
-				background: var(--ge-danger) !important;
-				border-color: var(--ge-danger-border) !important;
+				background: var(--ge-gradient-danger) !important;
+				box-shadow: 0 4px 15px rgba(239, 68, 68, 0.4) !important;
 			}
 
+			/* 格式选项悬停 */
 			.format-option:hover {
 				border-color: var(--ge-border-hover) !important;
+				background: var(--ge-surface-hover) !important;
 			}
 			.format-option.selected {
-				border-color: var(--ge-success) !important;
+				border-color: var(--ge-primary) !important;
+				background: rgba(59, 130, 246, 0.15) !important;
+				box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
 			}
 
+			/* 触发器悬停 */
 			#gemini-export-toggle:hover {
 				right: 8px;
-				transform: translateY(-50%) scale(1.06);
-				background: var(--ge-primary-hover);
+				transform: translateY(-50%) scale(1.05);
+				box-shadow: 0 8px 25px rgba(102, 126, 234, 0.4);
 			}
 
+			/* 面板滚动条 */
 			#gemini-export-panel::-webkit-scrollbar {
 				width: 6px;
 			}
 			#gemini-export-panel::-webkit-scrollbar-track {
-				background: var(--ge-panel-bg);
+				background: transparent;
 			}
 			#gemini-export-panel::-webkit-scrollbar-thumb {
 				background: var(--ge-scroll-thumb);
@@ -914,11 +968,12 @@
 				background: var(--ge-scroll-thumb-hover);
 			}
 
+			/* 目录滚动条 */
 			#conversation-directory::-webkit-scrollbar {
-				width: 6px;
+				width: 5px;
 			}
 			#conversation-directory::-webkit-scrollbar-track {
-				background: var(--ge-panel-bg);
+				background: transparent;
 			}
 			#conversation-directory::-webkit-scrollbar-thumb {
 				background: var(--ge-scroll-thumb);
@@ -928,28 +983,94 @@
 				background: var(--ge-scroll-thumb-hover);
 			}
 
+			/* 目录项 */
 			.gemini-conversation-directory-item {
-				padding: 8px 10px;
+				padding: 10px 12px;
 				font-size: 12px;
 				line-height: 1.4;
 				color: var(--ge-panel-text);
 				border-bottom: 1px solid var(--ge-divider);
 				cursor: pointer;
+				transition: all 150ms ease;
 			}
 			.gemini-conversation-directory-item:hover {
 				background: var(--ge-surface-hover);
+				padding-left: 16px;
 			}
 			.gemini-conversation-directory-item.active {
-				outline: 1px solid var(--ge-success);
-				outline-offset: -1px;
+				background: rgba(59, 130, 246, 0.15);
+				border-left: 2px solid var(--ge-primary);
+				padding-left: 14px;
 			}
 
+			/* 目录折叠按钮 */
 			.directory-toggle-btn:hover {
 				background: var(--ge-surface-hover) !important;
 			}
-
 			.directory-header:hover {
 				background: var(--ge-surface);
+			}
+
+			/* Toast 样式 */
+			.aihub-toast {
+				padding: 12px 16px;
+				border-radius: 12px;
+				font-size: 13px;
+				font-weight: 500;
+				backdrop-filter: blur(20px);
+				-webkit-backdrop-filter: blur(20px);
+				box-shadow: 0 8px 32px rgba(31, 38, 135, 0.25);
+				animation: aihub-toast-in 300ms cubic-bezier(0.4, 0, 0.2, 1);
+				max-width: 320px;
+			}
+			.aihub-toast-success {
+				background: rgba(16, 185, 129, 0.9);
+				color: white;
+				border: 1px solid rgba(255, 255, 255, 0.2);
+			}
+			.aihub-toast-error {
+				background: rgba(239, 68, 68, 0.9);
+				color: white;
+				border: 1px solid rgba(255, 255, 255, 0.2);
+			}
+			.aihub-toast-info {
+				background: rgba(59, 130, 246, 0.9);
+				color: white;
+				border: 1px solid rgba(255, 255, 255, 0.2);
+			}
+			@keyframes aihub-toast-in {
+				from {
+					transform: translateX(100%);
+					opacity: 0;
+				}
+				to {
+					transform: translateX(0);
+					opacity: 1;
+				}
+			}
+			@keyframes aihub-toast-out {
+				from {
+					transform: translateX(0);
+					opacity: 1;
+				}
+				to {
+					transform: translateX(100%);
+					opacity: 0;
+				}
+			}
+
+			/* 无障碍：减少动画 */
+			@media (prefers-reduced-motion: reduce) {
+				* {
+					transition-duration: 0.01ms !important;
+					animation-duration: 0.01ms !important;
+				}
+			}
+
+			/* 焦点样式 */
+			:focus-visible {
+				outline: 2px solid var(--ge-primary);
+				outline-offset: 2px;
 			}
 		`);
 
@@ -1019,6 +1140,27 @@
 			statusDiv.style.display = message ? 'block' : 'none';
 		}
 		console.log(`[Status] ${message}`);
+	}
+
+	// Toast 通知系统
+	function showToast(message, type = 'info', duration = 3000) {
+		if (!toastContainer) {
+			toastContainer = document.getElementById('aihub-toast-container');
+		}
+		if (!toastContainer) return;
+
+		const toast = document.createElement('div');
+		toast.className = `aihub-toast aihub-toast-${type}`;
+		toast.textContent = message;
+		toastContainer.appendChild(toast);
+
+		// 自动移除
+		setTimeout(() => {
+			toast.style.animation = 'aihub-toast-out 300ms cubic-bezier(0.4, 0, 0.2, 1) forwards';
+			setTimeout(() => {
+				if (toast.parentNode) toast.parentNode.removeChild(toast);
+			}, 300);
+		}, duration);
 	}
 
 
@@ -1850,7 +1992,7 @@ ${escapeMd(item.content)}
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.1.1): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.2.0 - AIhubEnhanced UI): 等待页面加载 (2.5秒)...");
 	startThemeSync();
 	setTimeout(createUI, 2500);
 
