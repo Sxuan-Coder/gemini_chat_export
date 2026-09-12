@@ -1,11 +1,12 @@
 // ==UserScript==
 // @name         Gemini 聊天对话增强脚本
 // @namespace    http://tampermonkey.net/
-// @version      1.2.0
-// @description  一键导出 Google Gemini 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
+// @version      1.3.0
+// @description  一键导出 Google Gemini / AI Studio 的网页端对话聊天记录为 JSON / TXT / Markdown 文件，支持对话内目录导航。
 // @author       sxuan
 // @match        https://gemini.google.com/app*
 // @match        https://gemini.google.com/u/*/app*
+// @match        https://aistudio.google.com/*
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @icon         data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCACAyNCIgZmlsbD0iIzAwNzhmZiI+PHBhdGggZD0iTTE5LjUgMi4yNWgtMTVjLTEuMjQgMC0yLjI1IDEuMDEtMi4yNSAyLjI1djE1YzAgMS4yNCAxLjAxIDIuMjUgMi4yNSAyLjI1aDE1YzEuMjQgMCAyLjI1LTEuMDEgMi4yNS0yLjI1di0xNWMwLTEuMjQtMS4wMS0yLjI1LTIuMjUtMi4yNXptLTIuMjUgNmgtMTAuNWMtLjQxIDAtLjc1LS4zNC0uNzUtLjc1cy4zNC0uNzUuNzUtLjc1aDEwLjVjLjQxIDAgLjc1LjM0Ljc1Ljc1cy0uMzQuNzUtLjc1Ljc1em0wIDRoLTEwLjVjLS40MSAwLS43NS0uMzQtLjc1LS43NXMuMzQtLjc1Ljc1LS43NWgxMC41Yy40MSAwIC43NS4zNC43NS43NXMtLjM0Ljc1LS4yNS43NXptLTMgNGgtNy41Yy0uNDEgMC0uNzUtLjM0LS43NS0uNzVzLjM0LS43NS43NS0uNzVoNy41Yy40MSAwIC43NS4zNC43NS43NXMtLjM0Ljc1LS43NS43NXoiLz48L3N2Zz4=
@@ -306,6 +307,21 @@
 	}
 
 	function getProjectName() {
+		// AI Studio: 优先使用页面中第一条用户消息作为项目名
+		if (location.hostname.includes('aistudio.google.com')) {
+			try {
+				const firstUserTurn = document.querySelector('ms-chat-turn .chat-turn-container.user .turn-content ms-cmark-node');
+				if (firstUserTurn && firstUserTurn.textContent && firstUserTurn.textContent.trim()) {
+					const raw = firstUserTurn.textContent.trim().replace(/\s+/g, ' ');
+					const clean = raw.substring(0, 20).replace(/[\\/:\*\?"<>\|]/g, '_');
+					if (clean) return `AiStudio_${clean}`;
+				}
+				if (document.title && document.title.trim() && !/^new chat$/i.test(document.title.trim())) {
+					return `AiStudio_${document.title.trim().replace(/[\\/:\*\?"<>\|]/g, '_')}`;
+				}
+			} catch (e) { console.warn('AI Studio 项目名提取失败', e); }
+			return "AiStudioChat";
+		}
 		try {
 			const firstUser = document.querySelector('#chat-history user-query .query-text, #chat-history user-query .query-text-line, #chat-history user-query .query-text p');
 			if (firstUser && firstUser.textContent && firstUser.textContent.trim()) {
@@ -359,6 +375,12 @@
 	// Gemini 新增滚动容器获取与解析逻辑
 	function getMainScrollerElement_Gemini() {
 		return document.querySelector('#chat-history') || document.documentElement;
+	}
+
+	// 按站点调度：优先 Gemini 结构，其次 AI Studio
+	function getMainScrollerElement_Dispatch() {
+		if (document.querySelector('#chat-history')) return getMainScrollerElement_Gemini();
+		return getMainScrollerElement_AiStudio();
 	}
 
 	function extractDataIncremental_Gemini() {
@@ -848,7 +870,7 @@
 
 				<!-- 版权信息 -->
 				<div style="margin-top: 28px; padding-top: 20px; border-top: 1px solid var(--ge-divider); text-align: center; font-size: 11px; color: var(--ge-text-muted-2);">
-					<div style="margin-bottom: 6px;">v1.2.0 | sxuan © 2025-2026</div>
+					<div style="margin-bottom: 6px;">v1.3.0 | sxuan © 2025-2026</div>
 					<a href="https://github.com/Sxuan-Coder/gemini_chat_export" target="_blank" style="color: var(--ge-primary); text-decoration: none; font-size: 11px;">GitHub</a>
 				</div>
 			</div>
@@ -1772,7 +1794,7 @@ ${escapeMd(item.content)}
 	async function autoScrollDown_AiStudio() {
 		console.log("启动自动滚动 (滚动导出)...");
 		isScrolling = true; collectedData.clear(); scrollCount = 0; noChangeCounter = 0;
-		const scroller = getMainScrollerElement_AiStudio();
+		const scroller = getMainScrollerElement_Dispatch();
 		if (!scroller) {
 			updateStatus('错误 (滚动): 找不到滚动区域');
 			alert('未能找到聊天记录的滚动区域，无法自动滚动。请检查脚本中的选择器。');
@@ -1939,7 +1961,7 @@ ${escapeMd(item.content)}
 		stopButtonScroll.textContent = buttonTextStopScroll;
 
 		// 在开始前先滚动到页面顶部
-		const scroller = getMainScrollerElement_AiStudio();
+		const scroller = getMainScrollerElement_Dispatch();
 		if (scroller) {
 			updateStatus('正在滚动到顶部..');
 			const isWindowScroller = (scroller === document.documentElement || scroller === document.body);
@@ -1992,7 +2014,7 @@ ${escapeMd(item.content)}
 	}
 
 	// --- 脚本初始化入口 ---
-	console.log("Gemini_Chat_Export 导出脚本 (v1.2.0 - AIhubEnhanced UI): 等待页面加载 (2.5秒)...");
+	console.log("Gemini_Chat_Export 导出脚本 (v1.3.0 - AIhubEnhanced UI + AI Studio): 等待页面加载 (2.5秒)...");
 	startThemeSync();
 	setTimeout(createUI, 2500);
 

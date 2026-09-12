@@ -1,8 +1,8 @@
 # AIhub Enhenced AI对话导出增强插件
 
-🚀 一键导出 Google Gemini 网页端的聊天对话记录，支持多种格式（TXT/JSON/Markdown），并提供智能导航目录。
+🚀 一键导出 Google Gemini / AI Studio 网页端的聊天对话记录，支持多种格式（TXT/JSON/Markdown），并提供智能导航目录。
 
-**当前版本：v1.1.1**
+**当前版本：v1.3.0**
 
 > **推荐使用 Chrome 插件版** 🔥  
 > 我们推出了功能更强大的 **Chrome 插件版本**，支持：
@@ -18,6 +18,7 @@
 
 ## ✨ 主要功能
 
+- **多平台支持**：同时支持 [Google Gemini](https://gemini.google.com/app) 与 [Google AI Studio](https://aistudio.google.com/) 聊天页面的对话导出。
 - **智能对话目录**：新增右侧独立目录面板，自动提取用户提问，点击即可快速跳转定位对话位置。
 - **深浅色主题同步**：智能感应 Gemini 官方网页主题变化，UI 界面实时同步切换深色/浅色模式。
 - **自动滚动导出**：智能滚动整个聊天界面，完整捕获所有对话记录，支持长对话完整导出。
@@ -48,7 +49,7 @@
 
 ### 基础使用
 
-1. 打开 [Google Gemini](https://gemini.google.com/app) 聊天页面
+1. 打开 [Google Gemini](https://gemini.google.com/app) 或 [Google AI Studio](https://aistudio.google.com/) 聊天页面
 2. 在页面右侧点击 **"<"** 按钮展开导出面板。
 3. **格式选择**：在面板顶部点击切换 TXT / JSON / MD 格式。
 4. **功能选择**：
